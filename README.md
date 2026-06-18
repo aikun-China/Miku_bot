@@ -45,9 +45,6 @@ miku_bot/
 │   ├── config_manager.py            # YAML 配置管理（bot.yaml）
 │   ├── html_render.py               # HTML 模板渲染
 │   ├── cache_cleanup.py             # 缓存图片定时清理
-│   └── templates/                   # HTML 模板
-│       ├── ping.html                # 状态卡片
-│       └── weather.html             # 天气卡片
 │
 ├── config/                          # 配置文件
 │   └── bot.yaml                     # 插件统一配置（YAML 格式）
