@@ -16,14 +16,6 @@ VENV_PYTHON = VENV_DIR / "Scripts" / "python.exe"
 VENV_PIP = VENV_DIR / "Scripts" / "pip.exe"
 REQUIREMENTS_FILE = BASE_DIR / "requirements.txt"
 
-# ─── Playwright 浏览器配置 ───
-PLAYWRIGHT_BROWSERS = ["chromium"]
-# Windows: %LOCALAPPDATA%\ms-playwright   其它系统: ~/.cache/ms-playwright
-if sys.platform == "win32":
-    PLAYWRIGHT_CACHE_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "ms-playwright"
-else:
-    PLAYWRIGHT_CACHE_DIR = Path.home() / ".cache" / "ms-playwright"
-
 
 def get_python_deps() -> dict:
     """
