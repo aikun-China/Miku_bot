@@ -1,0 +1,886 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>黑白名单 - MikuBot 管理后台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/style.css">
+<script src="/js/theme.js"></script>
+<style>
+body{font-family:"Noto Sans SC",sans-serif;background:linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 50%, var(--theme-glow) 100%);color:var(--text-primary);}
+.main{min-height:100vh;padding:28px 32px;margin-left:260px;}
+.page-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:12px;}
+.page-title{font-size:22px;font-weight:700;margin-bottom:8px;color:var(--text-primary);}
+.page-hint{color:var(--text-secondary);font-size:13px;margin-bottom:0;}
+.section{margin-bottom:28px;}
+.section-title{font-size:16px;font-weight:600;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border-color);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;color:var(--text-primary);}
+.btn{padding:10px 18px;background:linear-gradient(135deg,#2BA89E,#3A6E8E);border:none;border-radius:var(--radius-sm);color:#fff;font-size:14px;font-weight:600;cursor:pointer;transition:0.2s;box-shadow:0 4px 12px rgba(43,168,158,0.25);}
+.btn:hover{transform:translateY(-1px);box-shadow:0 8px 20px var(--theme-glow);}
+.btn-sec{background:rgba(255,255,255,0.7);border:1px solid var(--border-color);color:var(--text-secondary);backdrop-filter:blur(18px) saturate(180%);-webkit-backdrop-filter:blur(18px) saturate(180%);box-shadow:inset 0 1px 0 rgba(255,255,255,0.6);}
+.btn-sm{padding:6px 12px;font-size:12px;}
+.btn-danger{background:linear-gradient(135deg,#D64545,#B83A3A);color:#fff;box-shadow:0 4px 12px rgba(214,69,69,0.25);}
+.card{
+    background:rgba(255,255,255,0.7);
+    backdrop-filter:blur(18px) saturate(180%);
+    -webkit-backdrop-filter:blur(18px) saturate(180%);
+    border:1px solid rgba(255,255,255,0.55);
+    border-radius:var(--radius);
+    padding:20px;
+    box-shadow:0 8px 24px rgba(31,58,74,0.12),inset 0 1px 0 rgba(255,255,255,0.6);
+}
+.tag{
+    display:inline-flex;align-items:center;gap:6px;padding:4px 12px;
+    background:rgba(255,255,255,0.7);
+    backdrop-filter:blur(8px) saturate(180%);-webkit-backdrop-filter:blur(8px) saturate(180%);
+    border-radius:20px;font-size:13px;margin-right:8px;margin-bottom:6px;
+    border:1px solid rgba(255,255,255,0.55);cursor:pointer;transition:0.2s;color:var(--text-primary);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.6);
+}
+.tag:hover{border-color:var(--theme-primary);}
+.tag.active{background:var(--theme-glow);border-color:var(--theme-primary);color:var(--theme-primary);font-weight:600;}
+.tag-label{font-size:12px;color:var(--text-secondary);}
+.tag-remove{color:var(--danger);cursor:pointer;font-weight:700;margin-left:4px;}
+.tag-remove:hover{color:#B83A3A;}
+.loading{text-align:center;padding:40px;color:var(--text-secondary);}
+.empty{padding:24px;text-align:center;color:var(--text-secondary);font-size:13px;}
+
+/* 群组卡片网格 — 毛玻璃 */
+.group-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;}
+.group-card{
+    background:rgba(255,255,255,0.7);
+    backdrop-filter:blur(18px) saturate(180%);
+    -webkit-backdrop-filter:blur(18px) saturate(180%);
+    border:1px solid rgba(255,255,255,0.55);
+    border-radius:var(--radius-sm);
+    padding:14px;cursor:pointer;transition:.2s;display:flex;align-items:center;gap:12px;
+    box-shadow:0 6px 18px rgba(31,58,74,0.10),inset 0 1px 0 rgba(255,255,255,0.6);
+}
+.group-card:hover{border-color:var(--theme-primary);transform:translateY(-1px);box-shadow:0 6px 18px var(--theme-glow);}
+.group-card.in-list{border-color:var(--danger);background:rgba(214,69,69,0.10);}
+.group-card.in-list:hover{border-color:#B83A3A;}
+.group-info{flex:1;min-width:0;}
+.group-name{font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text-primary);}
+.group-id{font-size:12px;color:var(--text-secondary);font-family:"JetBrains Mono",monospace;}
+.group-status{font-size:11px;padding:2px 8px;border-radius:10px;flex-shrink:0;}
+.status-active{background:rgba(214,69,69,0.15);color:var(--danger);}
+.status-safe{background:rgba(43,168,106,0.12);color:var(--success);}
+
+/* 群组详细卡片（展开状态） */
+.group-detail{
+    background:rgba(255,255,255,0.7);
+    backdrop-filter:blur(18px) saturate(180%);
+    -webkit-backdrop-filter:blur(18px) saturate(180%);
+    border:1px solid rgba(255,255,255,0.55);
+    border-radius:var(--radius-sm);
+    padding:16px;margin-top:12px;
+    box-shadow:0 6px 18px rgba(31,58,74,0.10),inset 0 1px 0 rgba(255,255,255,0.6);
+}
+.group-detail-header{
+    display:flex;align-items:center;gap:12px;margin-bottom:12px;
+    padding-bottom:12px;border-bottom:1px solid var(--border-color);flex-wrap:wrap;
+}
+.group-detail-info{flex:1;min-width:0;}
+.group-detail-name{font-size:15px;font-weight:600;color:var(--text-primary);}
+.group-detail-id{font-size:12px;color:var(--text-secondary);font-family:"JetBrains Mono",monospace;}
+.group-detail-close{background:none;border:none;color:var(--text-secondary);font-size:20px;cursor:pointer;padding:4px 8px;border-radius:6px;transition:0.15s;}
+.group-detail-close:hover{background:var(--danger);color:#fff;}
+
+/* 模态框 — 毛玻璃 */
+.modal-overlay{
+    position:fixed;inset:0;
+    background:rgba(31,58,74,0.40);
+    backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+    z-index:9998;display:none;align-items:center;justify-content:center;
+}
+.modal-overlay.show{display:flex;}
+.modal{
+    background:rgba(255,255,255,0.7);
+    backdrop-filter:blur(18px) saturate(180%);
+    -webkit-backdrop-filter:blur(18px) saturate(180%);
+    border:1px solid rgba(255,255,255,0.55);
+    border-radius:var(--radius);
+    padding:28px;width:100%;max-width:520px;max-height:85vh;overflow-y:auto;
+    box-shadow:0 12px 40px rgba(31,58,74,0.18),inset 0 1px 0 rgba(255,255,255,0.6);
+}
+.modal h3{font-size:18px;margin-bottom:16px;font-weight:700;color:var(--text-primary);}
+.input{
+    width:100%;padding:10px 14px;
+    background:rgba(255,255,255,0.7);
+    backdrop-filter:blur(8px) saturate(180%);-webkit-backdrop-filter:blur(8px) saturate(180%);
+    border:1px solid var(--border-color);
+    border-radius:var(--radius-sm);
+    color:var(--text-primary);font-size:14px;margin-bottom:12px;outline:none;transition:0.2s;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.6);
+}
+.input:focus{border-color:var(--theme-primary);box-shadow:0 0 0 4px var(--theme-glow);}
+.select{
+    width:100%;padding:10px 14px;
+    background:rgba(255,255,255,0.7);
+    border:1px solid var(--border-color);
+    border-radius:var(--radius-sm);
+    color:var(--text-primary);font-size:14px;margin-bottom:12px;outline:none;transition:0.2s;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.6);
+}
+.select option{background:#fff;color:var(--text-primary);}
+.modal-actions{display:flex;gap:12px;justify-content:flex-end;margin-top:12px;flex-wrap:wrap;}
+.label{display:block;font-size:13px;color:var(--text-secondary);margin-bottom:6px;font-weight:500;}
+
+/* 插件选择列表 */
+.plugin-list{max-height:320px;overflow-y:auto;}
+.plugin-item{
+    display:flex;align-items:center;gap:10px;padding:10px 14px;
+    background:var(--bg-hover);
+    border-radius:var(--radius-sm);margin-bottom:8px;cursor:pointer;
+    border:1px solid transparent;transition:.15s;
+}
+.plugin-item:hover{border-color:var(--theme-primary);}
+.plugin-item.selected{border-color:var(--theme-primary);background:var(--theme-glow);}
+.plugin-item input[type="checkbox"]{width:16px;height:16px;accent-color:var(--theme-primary);}
+.plugin-item-label{display:flex;flex-direction:column;flex:1;min-width:0;}
+.plugin-item-name{font-size:13px;font-weight:500;color:var(--text-primary);}
+.plugin-item-sub{font-size:11px;color:var(--text-secondary);font-family:"JetBrains Mono",monospace;}
+.plugin-item-sub em{font-style:normal;color:var(--success);}
+
+/* ============ 移动端适配 ============ */
+@media (max-width: 768px) {
+    .main{margin-left:0;padding:72px 14px 20px 14px;}
+    .page-title{font-size:18px;text-align:center;}
+    .page-hint{font-size:12px;text-align:center;margin-bottom:16px;}
+    .section{margin-bottom:20px;}
+    .section-title{font-size:15px;padding-bottom:8px;margin-bottom:10px;}
+    .btn{padding:10px 14px;font-size:13px;}
+    .btn-sm{padding:6px 10px;font-size:11px;}
+    .card{padding:14px;border-radius:10px;}
+    .group-grid{grid-template-columns:1fr;gap:8px;}
+    .group-card{padding:12px;}
+    .group-name{font-size:13px;}
+    .group-id{font-size:11px;}
+    .tag{padding:4px 10px;font-size:12px;margin-right:6px;margin-bottom:6px;}
+    .modal{padding:16px;margin:10px;max-height:88vh;}
+    .modal-actions{flex-direction:column-reverse;gap:8px;margin-top:12px;}
+    .modal-actions .btn{width:100%;}
+    .input, .select{font-size:13px;padding:8px 10px;}
+    .plugin-item{padding:8px 10px;gap:8px;}
+    .plugin-item-name{font-size:13px;}
+    .plugin-item-sub{font-size:11px;}
+    .group-detail{padding:12px;}
+    .group-detail-header{margin-bottom:10px;padding-bottom:10px;}
+    .group-detail-name{font-size:14px;}
+    .modal-actions{flex-wrap:wrap;}
+}
+</style>
+</head>
+<body>
+<div id="sidebar"></div>
+<div class="main">
+    <div class="page-header">
+        <div>
+            <h1 class="page-title">黑白名单管理</h1>
+            <p class="page-hint">管理全局禁用的插件、以及特定群组/用户的插件禁用规则。Bot 加入的群组会自动获取。</p>
+        </div>
+        <div id="theme-container"></div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">
+            <span>全局禁用的插件</span>
+        </div>
+        <div class="card">
+            <div id="global-tags" class="tag" style="display:inline-flex;flex-wrap:wrap;gap:6px;"></div>
+            <div id="global-empty" class="empty">暂无全局禁用规则</div>
+            <div style="margin-top:12px;">
+                <button class="btn btn-sm btn-sec" onclick="showGlobalModal()">+ 添加全局禁用</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">
+            <span>群组黑名单</span>
+            <button class="btn btn-sm" onclick="showGroupPicker()">+ 添加群组</button>
+        </div>
+        <div id="group-list">
+            <div class="loading">加载中...</div>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">
+            <span>用户黑名单</span>
+            <button class="btn btn-sm btn-sec" onclick="showUserModal()">+ 添加用户</button>
+        </div>
+        <div class="card">
+            <div id="user-tags" class="tag" style="display:inline-flex;flex-wrap:wrap;gap:6px;"></div>
+            <div id="user-empty" class="empty">暂无用户禁用规则</div>
+        </div>
+    </div>
+
+</div>
+
+<!-- 全局禁用插件选择模态框 -->
+<div class="modal-overlay" id="modal-global">
+    <div class="modal" style="background:white;padding:20px;border:2px solid #2BA89E;border-radius:12px;">
+        <h3 style="color:#333;margin-bottom:16px;">添加全局禁用插件</h3>
+        <div class="plugin-list" id="modal-global-list"></div>
+        <div class="modal-actions">
+            <button class="btn btn-sec" onclick="closeModal('modal-global')">取消</button>
+            <button class="btn" onclick="submitGlobalDisable()">确定禁用</button>
+        </div>
+    </div>
+</div>
+
+<!-- 群组选择模态框 -->
+<div class="modal-overlay" id="modal-group">
+    <div class="modal">
+        <h3>选择要禁用的群组</h3>
+        <div class="group-grid" id="modal-group-list" style="max-height:400px;overflow-y:auto;"></div>
+        <div class="modal-actions">
+            <button class="btn btn-sec" onclick="closeModal('modal-group')">取消</button>
+        </div>
+    </div>
+</div>
+
+<!-- 群组插件禁用选择模态框 -->
+<div class="modal-overlay" id="modal-group-plugins">
+    <div class="modal">
+        <h3 id="modal-group-plugins-title">群组插件禁用</h3>
+        <div class="plugin-list" id="modal-group-plugins-list"></div>
+        <div class="modal-actions">
+            <button class="btn btn-sec" onclick="closeModal('modal-group-plugins')">取消</button>
+            <button class="btn" onclick="submitGroupPlugins()">确定</button>
+        </div>
+    </div>
+</div>
+
+<!-- 用户禁用模态框 -->
+<div class="modal-overlay" id="modal-user">
+    <div class="modal">
+        <h3>添加用户黑名单</h3>
+        <div class="label">输入 QQ 号</div>
+        <input type="text" class="input" id="modal-user-input" placeholder="输入 QQ 号">
+        <div class="label" style="margin-top:12px;">选择要禁用的插件</div>
+        <div class="plugin-list" id="modal-user-plugins-list" style="max-height:240px;overflow-y:auto;"></div>
+        <div class="modal-actions">
+            <button class="btn btn-sec" onclick="closeModal('modal-user')">取消</button>
+            <button class="btn" onclick="submitUserDisable()">确定禁用</button>
+        </div>
+    </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/app.js"></script>
+<script>
+let bl = null;
+let allGroups = [];       // {id, name, avatar}
+let allUsers = [];        // {id, nickname}
+let allPlugins = [];     // {name, label, description}
+let currentGroupPlugins = [];  // 当前操作的群组的禁用插件列表
+let currentGroupId = null;
+let selectedPlugins = new Set();
+
+async function loadAll() {
+    try {
+        const [blData, plData, grpData, userData] = await Promise.all([
+            api.blacklist.get(),
+            api.plugins.list(),
+            api.groups.list(),
+            api.users.list()
+        ]);
+        bl = blData;
+        allGroups = grpData.groups || [];
+        allUsers = userData.users || [];
+        allPlugins = (plData.plugins || []).filter(function(p){ return p.type === "plugin"; });
+        
+        console.log("[DEBUG] 用户列表加载结果:", userData);
+        console.log("[DEBUG] allUsers 长度:", allUsers.length);
+        
+        renderGlobal();
+        renderGroups();
+        renderUsers();
+    } catch (e) {
+        console.error("[DEBUG] 加载失败:", e);
+        Toast.error("加载失败: " + e.message);
+    }
+}
+
+// ==================== 全局禁用 ====================
+function renderGlobal() {
+    const container = document.getElementById("global-tags");
+    const empty = document.getElementById("global-empty");
+    const list = bl.global_disabled || [];
+    const isAll = list.indexOf("__all__") !== -1;
+    if (!list.length) {
+        container.innerHTML = "";
+        empty.style.display = "block";
+        empty.textContent = "暂无全局禁用规则";
+        return;
+    }
+    empty.style.display = "none";
+    // 过滤掉 __all__，单独显示
+    const normalPlugins = list.filter(function(n){ return n !== "__all__"; });
+    const allTag = isAll
+        ? '<span class="tag" style="background:#2a1a1a;border-color:#ff5555;">🚫 完全禁用 Bot<span class="tag-remove" onclick="toggleGlobalAll()">x</span></span>'
+        : '';
+    const normalTags = normalPlugins.map(function(name){
+        const plugin = allPlugins.find(function(p){return p.name === name;});
+        const label = plugin ? plugin.label : name;
+        return '<span class="tag">' + label +
+            '<span class="tag-label">(' + name + ')</span>' +
+            '<span class="tag-remove" onclick="removeGlobal(\'' + name.replace(/'/g, "\\'") + '\')">x</span>' +
+            '</span>';
+    }).join("");
+    container.innerHTML = allTag + normalTags;
+}
+
+function removeGlobal(name) {
+    bl.global_disabled = (bl.global_disabled || []).filter(function(x){return x !== name;});
+    if (!bl.global_disabled.length) bl.global_disabled = [];
+    save().then(renderGlobal);
+}
+
+function toggleGlobalAll() {
+    var arr = bl.global_disabled || [];
+    var idx = arr.indexOf("__all__");
+    if (idx !== -1) {
+        arr.splice(idx, 1);
+    } else {
+        arr.push("__all__");
+    }
+    bl.global_disabled = arr;
+    save().then(renderGlobal);
+}
+
+// ==================== 群组黑名单 ====================
+function renderGroups() {
+    const container = document.getElementById("group-list");
+    const disabledGroups = bl.group_disabled || {};
+    const disabledKeys = Object.keys(disabledGroups);
+
+    if (!disabledKeys.length) {
+        container.innerHTML = '<div class="card"><div class="empty">暂无群组在黑名单中，点击右上角「+ 添加群组」</div></div>';
+        return;
+    }
+
+    container.innerHTML = disabledKeys.map(function(gid){
+        const plugins = disabledGroups[gid] || [];
+        const ginfo = allGroups.find(function(g){return String(g.id) === String(gid);});
+        const gname = ginfo ? ginfo.name : ("群" + gid);
+        const isAll = plugins.indexOf("__all__") !== -1;
+        const normalPlugins = plugins.filter(function(n){ return n !== "__all__"; });
+
+        const allTag = isAll
+            ? '<span class="tag" style="background:#2a1a1a;border-color:#ff5555;">🚫 完全禁用 Bot<span class="tag-remove" onclick="toggleGroupAll(\'' + gid + '\')">x</span></span>'
+            : '';
+
+        const pluginsHtml = (isAll || normalPlugins.length)
+            ? (allTag + normalPlugins.map(function(p){
+                const plugin = allPlugins.find(function(x){return x.name === p;});
+                const label = plugin ? plugin.label : p;
+                return '<span class="tag">' + label +
+                    '<span class="tag-label">(' + p + ')</span>' +
+                    '<span class="tag-remove" onclick="removeGroupPlugin(\'' + gid + '\',\'' + p.replace(/'/g, "\\'") + '\')">x</span>' +
+                    '</span>';
+            }).join(""))
+            : '<span style="color:#a0a0c0;font-size:12px;">点击下方「+ 添加禁用插件」</span>';
+
+        const allBtnLabel = isAll ? "取消完全禁用" : "🚫 完全禁用 Bot";
+        const allBtnClass = isAll ? "btn-sec" : "btn-danger";
+
+        return (
+            '<div class="card" style="margin-bottom:12px;">' +
+                '<div class="group-detail-header">' +
+                    '<div>' +
+                        '<div class="group-detail-name">' + gname + '</div>' +
+                        '<div class="group-detail-id">群号: ' + gid + '</div>' +
+                    '</div>' +
+                    '<button class="btn btn-sm btn-danger" style="margin-left:8px;" onclick="removeGroup(\'' + gid + '\')">移除黑名单</button>' +
+                '</div>' +
+                '<div style="margin-bottom:8px;font-size:12px;color:#a0a0c0;">禁用插件：</div>' +
+                '<div id="group-plugins-' + gid + '">' + pluginsHtml + '</div>' +
+                '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">' +
+                    '<button class="btn btn-sm btn-sec" onclick="showGroupPluginsModal(\'' + gid + '\')">+ 添加禁用插件</button>' +
+                    '<button class="btn btn-sm ' + allBtnClass + '" onclick="toggleGroupAll(\'' + gid + '\')">' + allBtnLabel + '</button>' +
+                '</div>' +
+            '</div>'
+        );
+    }).join("");
+}
+
+function toggleGroupAll(gid) {
+    bl.group_disabled = bl.group_disabled || {};
+    var arr = bl.group_disabled[gid] || [];
+    var idx = arr.indexOf("__all__");
+    if (idx !== -1) {
+        arr.splice(idx, 1);
+    } else {
+        arr.push("__all__");
+    }
+    bl.group_disabled[gid] = arr;
+    save().then(renderGroups);
+}
+
+function removeGroup(gid) {
+    if (!confirm("确定要移除群 " + gid + " 的黑名单限制吗？")) return;
+    delete (bl.group_disabled || {})[gid];
+    save().then(renderGroups);
+}
+
+function removeGroupPlugin(gid, plugin) {
+    bl.group_disabled = bl.group_disabled || {};
+    bl.group_disabled[gid] = (bl.group_disabled[gid] || []).filter(function(x){return x !== plugin;});
+    if (!bl.group_disabled[gid].length) delete bl.group_disabled[gid];
+    save().then(renderGroups);
+}
+
+// ==================== 用户黑名单 ====================
+function renderUsers() {
+    const container = document.getElementById("user-tags");
+    const empty = document.getElementById("user-empty");
+    const disabledUsers = bl.user_disabled || {};
+    const userKeys = Object.keys(disabledUsers);
+    if (!userKeys.length) {
+        container.innerHTML = "";
+        empty.style.display = "block";
+        return;
+    }
+    empty.style.display = "none";
+    container.innerHTML = userKeys.map(function(uid){
+        const plugins = disabledUsers[uid] || [];
+        const isAll = plugins.indexOf("__all__") !== -1;
+        const normalPlugins = plugins.filter(function(n){ return n !== "__all__"; });
+        const uinfo = allUsers.find(function(u){return String(u.id) === String(uid);});
+        const uname = uinfo ? uinfo.nickname : uid;
+
+        const allTag = isAll
+            ? '<span class="tag" style="background:#2a1a1a;border-color:#ff5555;">🚫 完全禁用 Bot<span class="tag-remove" onclick="toggleUserAll(\'' + uid + '\')">x</span></span>'
+            : '';
+
+        const pluginsHtml = (isAll || normalPlugins.length)
+            ? (allTag + normalPlugins.map(function(p){
+                const plugin = allPlugins.find(function(x){return x.name === p;});
+                const label = plugin ? plugin.label : p;
+                return '<span class="tag">' + label +
+                    '<span class="tag-label">(' + p + ')</span>' +
+                    '<span class="tag-remove" onclick="removeUserPlugin(\'' + uid + '\',\'' + p.replace(/'/g, "\\'") + '\')">x</span>' +
+                    '</span>';
+            }).join(""))
+            : '<span style="color:#a0a0c0;font-size:12px;">点击下方「+ 添加禁用插件」</span>';
+
+        const allBtnLabel = isAll ? "取消完全禁用" : "🚫 完全禁用 Bot";
+        const allBtnClass = isAll ? "btn-sec" : "btn-danger";
+
+        return (
+            '<div class="card" style="margin-bottom:12px;">' +
+                '<div class="group-detail-header">' +
+                    '<div>' +
+                        '<div class="group-detail-name">' + uname + '</div>' +
+                        '<div class="group-detail-id">QQ: ' + uid + '</div>' +
+                    '</div>' +
+                    '<button class="btn btn-sm btn-danger" style="margin-left:8px;" onclick="removeUser(\'' + uid + '\')">移除</button>' +
+                '</div>' +
+                '<div style="margin-bottom:8px;font-size:12px;color:#a0a0c0;">禁用插件：</div>' +
+                '<div id="user-plugins-' + uid + '">' + pluginsHtml + '</div>' +
+                '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">' +
+                    '<button class="btn btn-sm btn-sec" onclick="showUserPluginsModal(\'' + uid + '\')">+ 添加禁用插件</button>' +
+                    '<button class="btn btn-sm ' + allBtnClass + '" onclick="toggleUserAll(\'' + uid + '\')">' + allBtnLabel + '</button>' +
+                '</div>' +
+            '</div>'
+        );
+    }).join("");
+}
+
+function toggleUserAll(uid) {
+    bl.user_disabled = bl.user_disabled || {};
+    var arr = bl.user_disabled[uid] || [];
+    var idx = arr.indexOf("__all__");
+    if (idx !== -1) {
+        arr.splice(idx, 1);
+    } else {
+        arr.push("__all__");
+    }
+    bl.user_disabled[uid] = arr;
+    save().then(renderUsers);
+}
+
+function removeUser(uid) {
+    delete (bl.user_disabled || {})[uid];
+    save().then(renderUsers);
+}
+
+function removeUserPlugin(uid, plugin) {
+    bl.user_disabled = bl.user_disabled || {};
+    bl.user_disabled[uid] = (bl.user_disabled[uid] || []).filter(function(x){return x !== plugin;});
+    if (!bl.user_disabled[uid].length) delete bl.user_disabled[uid];
+    save().then(renderUsers);
+}
+
+// ==================== 模态框 ====================
+function closeModal(id) { 
+    var modal = document.getElementById(id);
+    if (modal) {
+        modal.style.display = "none";
+    }
+}
+
+function openModal(id) { 
+    var modal = document.getElementById(id);
+    if (modal) {
+        console.log("[DEBUG] openModal:", id);
+        modal.style.display = "flex";
+        modal.style.position = "fixed";
+        modal.style.top = "0";
+        modal.style.left = "0";
+        modal.style.right = "0";
+        modal.style.bottom = "0";
+        modal.style.background = "rgba(31, 58, 74, 0.5)";
+        modal.style.zIndex = "9999";
+        modal.style.alignItems = "center";
+        modal.style.justifyContent = "center";
+        modal.style.backdropFilter = "blur(10px)";
+        modal.style.WebkitBackdropFilter = "blur(10px)";
+    }
+}
+
+function buildPluginListHtml(selected) {
+    console.log("[DEBUG] buildPluginListHtml called with selected:", selected);
+    console.log("[DEBUG] allPlugins length:", allPlugins.length);
+    console.log("[DEBUG] allPlugins[0]:", allPlugins[0]);
+    
+    var items = [];
+    for(var i=0; i<allPlugins.length; i++) {
+        var p = allPlugins[i];
+        console.log("[DEBUG] plugin " + i + ":", p);
+        var isSelected = selected && selected.indexOf(p.name) !== -1;
+        var item = '<div class="plugin-item ' + (isSelected ? "selected" : "") + '"' +
+            ' onclick="this.classList.toggle(\'selected\');' +
+            'var cb = this.querySelector(\'input\');cb.checked=this.classList.contains(\'selected\');">' +
+            '<input type="checkbox" ' + (isSelected ? "checked" : "") + ' onclick="event.stopPropagation();this.checked=!this.checked;this.closest(\'.plugin-item\').classList.toggle(\'selected\',this.checked);">' +
+            '<div class="plugin-item-label">' +
+                '<div class="plugin-item-name">' + (p.label || p.name) + '</div>' +
+                '<div class="plugin-item-sub">' + p.name + '</div>' +
+            '</div>' +
+        '</div>';
+        items.push(item);
+        console.log("[DEBUG] item " + i + " length:", item.length);
+    }
+    
+    var html = items.join("");
+    console.log("[DEBUG] generated html length:", html.length);
+    console.log("[DEBUG] generated html preview:", html.substring(0, 200));
+    return html;
+}
+
+// 全局禁用
+function showGlobalModal() {
+    createModal("添加全局禁用插件", buildPluginListHtml(bl.global_disabled || []), function(selected){
+        bl.global_disabled = selected;
+        save().then(renderGlobal);
+    });
+}
+
+async function submitGlobalDisable() {
+    const selected = [];
+    document.querySelectorAll("#modal-global-list .plugin-item.selected").forEach(function(item){
+        var name = allPlugins.find(function(p){
+            return item.querySelector(".plugin-item-name").textContent === (p.label || p.name);
+        });
+        if (name) selected.push(name.name);
+    });
+    bl.global_disabled = selected;
+    if (await save()) {
+        closeModal("modal-global");
+        renderGlobal();
+    }
+}
+
+// 群组选择
+function showGroupPicker() {
+    var html = `
+        <div style="margin-bottom:16px;">
+            <div style="font-size:13px;color:#666;margin-bottom:6px;font-weight:500;">搜索群组</div>
+            <input type="text" id="modal-group-search" placeholder="输入群名或群号搜索..." style="width:100%;padding:10px 14px;border:1px solid #ddd;border-radius:8px;font-size:14px;outline:none;transition:0.2s;" onfocus="this.style.borderColor='#2BA89E';" onblur="this.style.borderColor='#ddd';" oninput="filterGroupList();"/>
+        </div>
+        <div id="group-search-results" style="max-height:350px;overflow-y:auto;">
+            ${renderGroupList()}
+        </div>
+    `;
+    
+    createModal("选择要禁用的群组", html, null);
+}
+
+// 渲染群组列表
+function renderGroupList(keyword) {
+    const disabledGroups = Object.keys(bl.group_disabled || {});
+    var groups = allGroups;
+    
+    if(keyword) {
+        keyword = keyword.toLowerCase();
+        groups = allGroups.filter(function(g){
+            var name = (g.name || "").toLowerCase();
+            return name.indexOf(keyword) !== -1 || String(g.id).indexOf(keyword) !== -1;
+        });
+    }
+    
+    if(groups.length === 0) {
+        return '<div style="text-align:center;color:#aaa;font-size:13px;padding:20px;">未找到匹配的群组</div>';
+    }
+    
+    return groups.map(function(g){
+        const isIn = disabledGroups.indexOf(String(g.id)) !== -1;
+        return (
+            '<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;background:rgba(240,245,250,0.8);border-radius:10px;margin-bottom:8px;border:1px solid transparent;cursor:pointer;transition:0.15s;' + (isIn ? 'opacity:0.6;cursor:not-allowed;"' : 'border-color:#2BA89E;" onclick="selectGroup(\'' + g.id + '\');') + '">' +
+                '<div style="flex:1;min-width:0;">' +
+                    '<div style="font-size:14px;font-weight:600;color:#1f3a4a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + (g.name || "未命名群") + '</div>' +
+                    '<div style="font-size:12px;color:#888;font-family:monospace;">群号: ' + g.id + '</div>' +
+                '</div>' +
+                '<div style="font-size:11px;padding:3px 10px;border-radius:10px;' + (isIn ? 'background:rgba(214,69,69,0.15);color:#D64545;' : 'background:rgba(43,168,106,0.12);color:#2BA86A;') + '">' +
+                    (isIn ? "已禁用" : "点击添加") +
+                '</div>' +
+            '</div>'
+        );
+    }).join("");
+}
+
+// 过滤群组列表
+function filterGroupList() {
+    var keyword = document.getElementById("modal-group-search").value.trim();
+    document.getElementById("group-search-results").innerHTML = renderGroupList(keyword);
+}
+
+function selectGroup(gid) {
+    // 关闭当前模态框并打开插件选择
+    document.getElementById("dynamic-modal").remove();
+    
+    currentGroupId = gid;
+    const existing = (bl.group_disabled && bl.group_disabled[gid]) || [];
+    const ginfo = allGroups.find(function(g){return String(g.id) === String(gid);});
+    const gname = ginfo ? ginfo.name : ("群" + gid);
+    
+    createModal(gname + " (群号:" + gid + ") - 选择要禁用的插件", buildPluginListHtml(existing), function(selected){
+        bl.group_disabled = bl.group_disabled || {};
+        bl.group_disabled[currentGroupId] = selected;
+        save().then(renderGroups);
+    });
+}
+
+// 群组内添加插件
+function showGroupPluginsModal(gid) {
+    currentGroupId = gid;
+    const existing = (bl.group_disabled && bl.group_disabled[gid]) || [];
+    const ginfo = allGroups.find(function(g){return String(g.id) === String(gid);});
+    const gname = ginfo ? ginfo.name : ("群" + gid);
+    
+    createModal(gname + " (群号:" + gid + ") - 添加禁用插件", buildPluginListHtml(existing), function(selected){
+        bl.group_disabled = bl.group_disabled || {};
+        bl.group_disabled[currentGroupId] = selected;
+        save().then(renderGroups);
+    });
+}
+
+// 用户禁用
+function showUserModal() {
+    var html = `
+        <div style="margin-bottom:16px;">
+            <div style="font-size:13px;color:#666;margin-bottom:6px;font-weight:500;">搜索或输入 QQ 号</div>
+            <input type="text" id="modal-user-input" placeholder="输入 QQ 号搜索..." style="width:100%;padding:10px 14px;border:1px solid #ddd;border-radius:8px;font-size:14px;outline:none;transition:0.2s;" onfocus="this.style.borderColor='#2BA89E';" onblur="this.style.borderColor='#ddd';" oninput="filterUserList();"/>
+        </div>
+        <div id="user-search-results" style="max-height:200px;overflow-y:auto;margin-bottom:16px;border:1px solid #eee;border-radius:8px;padding:8px;">
+            <div style="text-align:center;color:#aaa;font-size:13px;">输入QQ号搜索，或从下方列表选择</div>
+        </div>
+        <div>
+            <div style="font-size:13px;color:#666;margin-bottom:6px;font-weight:500;">选择要禁用的插件</div>
+            ${buildPluginListHtml([])}
+        </div>
+    `;
+    
+    createModal("添加用户黑名单", html, function(selected){
+        const uid = document.getElementById("modal-user-input").value.trim();
+        if (!uid) { Toast.warning("请输入 QQ 号"); return; }
+        if (!/^\d+$/.test(uid)) { Toast.warning("QQ 号必须是纯数字"); return; }
+        
+        bl.user_disabled = bl.user_disabled || {};
+        bl.user_disabled[uid] = selected;
+        save().then(renderUsers);
+    });
+    
+    setTimeout(function() {
+        filterUserList();
+    }, 100);
+}
+
+// 过滤用户列表
+function filterUserList() {
+    var keyword = document.getElementById("modal-user-input").value.trim().toLowerCase();
+    var results = document.getElementById("user-search-results");
+    
+    console.log("[DEBUG] filterUserList called with keyword:", keyword);
+    
+    // 合并好友列表和黑名单用户
+    var userMap = {};
+    var users = window.allUsers || allUsers || [];
+    console.log("[DEBUG] users length:", users.length);
+    
+    users.forEach(function(u){
+        userMap[u.id] = u.nickname || u.id;
+    });
+    if(bl.user_disabled) {
+        Object.keys(bl.user_disabled).forEach(function(uid){
+            if(!userMap[uid]) {
+                userMap[uid] = uid;
+            }
+        });
+    }
+    
+    var userArray = Object.keys(userMap).sort();
+    console.log("[DEBUG] userArray length:", userArray.length);
+    
+    // 使用浅色风格的列表项
+    var renderItem = function(uid){
+        var nickname = userMap[uid];
+        return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;margin-bottom:6px;background:#f8fafc;border-radius:10px;cursor:pointer;transition:all 0.2s;border:1px solid transparent;" onmouseover="this.style.background=\'#e8f4f3\';this.style.borderColor=\'#2BA89E\';" onmouseout="this.style.background=\'#f8fafc\';this.style.borderColor=\'transparent\';" onclick="selectUser(\'' + uid + '\');">' +
+            '<span style="font-size:14px;color:#2BA89E;font-weight:500;">' + nickname + '</span>' +
+            '<span style="font-size:12px;color:#94a3b8;font-family:monospace;">' + uid + '</span>' +
+        '</div>';
+    };
+    
+    if(!keyword) {
+        results.innerHTML = userArray.length > 0 ? userArray.map(renderItem).join("") : '<div style="text-align:center;color:#94a3b8;font-size:13px;padding:16px;">暂无用户数据</div>';
+        return;
+    }
+    
+    // 过滤匹配的用户（支持QQ号和昵称搜索）
+    var filtered = userArray.filter(function(uid){
+        var nickname = userMap[uid].toLowerCase();
+        return uid.indexOf(keyword) !== -1 || nickname.indexOf(keyword) !== -1;
+    });
+    
+    console.log("[DEBUG] filtered length:", filtered.length);
+    
+    if(filtered.length > 0) {
+        results.innerHTML = filtered.map(renderItem).join("");
+    } else {
+        results.innerHTML = '<div style="text-align:center;color:#94a3b8;font-size:13px;padding:16px;">未找到匹配的用户</div>';
+    }
+}
+
+// 选择用户
+function selectUser(uid) {
+    document.getElementById("modal-user-input").value = uid;
+}
+
+// 用户内添加插件
+function showUserPluginsModal(uid) {
+    const existing = (bl.user_disabled && bl.user_disabled[uid]) || [];
+    
+    var html = `
+        <div style="margin-bottom:16px;">
+            <div style="font-size:13px;color:#666;margin-bottom:6px;font-weight:500;">输入 QQ 号</div>
+            <input type="text" id="modal-user-input" value="${uid}" placeholder="输入 QQ 号" style="width:100%;padding:10px 14px;border:1px solid #ddd;border-radius:8px;font-size:14px;outline:none;transition:0.2s;" onfocus="this.style.borderColor='#2BA89E';" onblur="this.style.borderColor='#ddd';"/>
+        </div>
+        <div>
+            <div style="font-size:13px;color:#666;margin-bottom:6px;font-weight:500;">选择要禁用的插件</div>
+            ${buildPluginListHtml(existing)}
+        </div>
+    `;
+    
+    createModal("添加用户黑名单", html, function(selected){
+        const uid_new = document.getElementById("modal-user-input").value.trim();
+        if (!uid_new) { Toast.warning("请输入 QQ 号"); return; }
+        if (!/^\d+$/.test(uid_new)) { Toast.warning("QQ 号必须是纯数字"); return; }
+        
+        bl.user_disabled = bl.user_disabled || {};
+        bl.user_disabled[uid_new] = selected;
+        save().then(renderUsers);
+    });
+}
+
+// 保存
+async function save() {
+    try {
+        await api.blacklist.update(bl);
+        Toast.success("已保存");
+        return true;
+    } catch (e) {
+        Toast.error("保存失败: " + e.message);
+        return false;
+    }
+}
+
+// 通用模态框创建函数
+function createModal(title, contentHtml, onConfirm) {
+    var overlay = document.createElement("div");
+    overlay.id = "dynamic-modal";
+    overlay.style.cssText = `
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(200, 220, 240, 0.6);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 9999;
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+    `;
+    
+    var modal = document.createElement("div");
+    modal.style.cssText = `
+        background: linear-gradient(145deg, #ffffff, #f8fafc);
+        border: 1px solid rgba(43, 168, 158, 0.2);
+        border-radius: 20px;
+        padding: 32px;
+        max-width: 540px;
+        width: 90%;
+        max-height: 85vh;
+        overflow-y: auto;
+        box-shadow: 0 8px 32px rgba(43, 168, 158, 0.15);
+    `;
+    
+    modal.innerHTML = `
+        <h3 style="margin-top:0;margin-bottom:20px;color:#2BA89E;font-size:20px;font-weight:600;">${title}</h3>
+        <div style="max-height:350px;overflow-y:auto;">${contentHtml}</div>
+        <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:20px;">
+            <button style="padding:10px 20px;background:#f0f5fa;border:1px solid #e0e7ff;border-radius:10px;color:#64748b;font-size:14px;font-weight:500;cursor:pointer;transition:all 0.2s;" onclick="document.getElementById('dynamic-modal').remove();">取消</button>
+            <button style="padding:10px 20px;background:linear-gradient(135deg,#2BA89E,#3A6E8E);border:none;border-radius:10px;color:white;font-size:14px;font-weight:600;cursor:pointer;transition:all 0.2s;box-shadow:0 4px 14px rgba(43,168,158,0.3);" onclick="handleModalConfirm(${onConfirm ? 'true' : 'false'});">确定</button>
+        </div>
+    `;
+    
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    
+    // 点击遮罩关闭
+    overlay.addEventListener("click", function(e){
+        if(e.target === overlay) {
+            overlay.remove();
+        }
+    });
+    
+    // 保存确认函数引用
+    window._currentModalConfirm = onConfirm;
+    
+    // 注册确认处理函数
+    window.handleModalConfirm = function(){
+        var selected = [];
+        document.querySelectorAll("#dynamic-modal .plugin-item.selected").forEach(function(item){
+            var name = allPlugins.find(function(p){
+                return item.querySelector(".plugin-item-name").textContent === (p.label || p.name);
+            });
+            if (name) selected.push(name.name);
+        });
+        if(window._currentModalConfirm) {
+            window._currentModalConfirm(selected);
+        }
+        overlay.remove();
+    };
+}
+
+if (window.ThemeManager) window.ThemeManager.render("#theme-container");
+renderSidebar("blacklist");
+requireAuth().then(function(ok){ if (ok) loadAll(); });
+</script>
+</body>
+</html>

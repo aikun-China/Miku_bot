@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>插件与配置 - MikuBot 管理后台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/style.css">
+<script src="/js/theme.js"></script>
+<style>
+body { font-family: "Noto Sans SC", sans-serif; background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 50%, var(--theme-glow) 100%); color: var(--text-primary); }
+
+.main { min-height: 100vh; padding: 28px 32px; margin-left: 260px; }
+.page-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:12px;}
+.page-title { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
+.page-subtitle { color: var(--text-secondary); font-size: 13px; margin-bottom: 0; }
+
+/* 插件卡片网格 — 毛玻璃 */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+
+.plugin {
+    background: rgba(255, 255, 255, 0.7);
+    backdrop-filter: blur(18px) saturate(180%);
+    -webkit-backdrop-filter: blur(18px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.55);
+    border-bottom: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    padding: 20px; transition: 0.2s;
+    display: flex; flex-direction: column; gap: 12px;
+    box-shadow: var(--deep-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+.plugin:hover { border-color: var(--theme-primary); box-shadow: 0 8px 28px var(--theme-glow), inset 0 1px 0 rgba(255, 255, 255, 0.6); }
+.plugin.disabled { opacity: 0.65; }
+
+.plugin-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.plugin-name { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+.plugin-subname { font-size: 12px; color: var(--text-secondary); font-family: "JetBrains Mono", monospace; }
+.plugin-desc { font-size: 13px; color: var(--text-secondary); line-height: 1.5; min-height: 40px; }
+
+.plugin-footer {
+    display: flex; justify-content: space-between; align-items: center;
+    padding-top: 12px; border-top: 1px solid var(--border-color);
+}
+.status-text { font-size: 13px; color: var(--text-secondary); display: flex; align-items: center; gap: 8px; }
+.status-text .dot { width: 8px; height: 8px; border-radius: 50%; }
+.dot-on { background: var(--success); box-shadow: 0 0 6px var(--theme-glow); }
+.dot-off { background: var(--danger); }
+
+.toggle {
+    position: relative; width: 44px; height: 24px; background: var(--border-color);
+    border-radius: 24px; cursor: pointer; transition: 0.2s;
+    flex-shrink: 0;
+}
+.toggle:hover { transform: scale(1.08); }
+.toggle.on { background: var(--gradient); box-shadow: 0 0 8px var(--theme-glow); }
+.toggle.saving { opacity: 0.5; pointer-events: none; }
+.toggle::after {
+    content: ""; position: absolute; width: 18px; height: 18px;
+    background: #fff; border-radius: 50%; top: 3px; left: 3px; transition: 0.2s;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+.toggle.on::after { left: 23px; }
+
+.settings-btn {
+    padding: 8px 16px; background: var(--gradient);
+    border: none; border-radius: var(--radius-sm); color: #fff; font-size: 13px; font-weight: 500;
+    cursor: pointer; transition: 0.2s;
+}
+.settings-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 12px var(--theme-glow); }
+
+/* 模态框 — 毛玻璃 */
+.modal-overlay {
+    position: fixed; inset: 0;
+    background: rgba(31, 58, 74, 0.35);
+    z-index: 9998; display: none; align-items: center; justify-content: center;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+}
+.modal-overlay.show { display: flex; }
+.modal {
+    background: rgba(255, 255, 255, 0.7);
+    backdrop-filter: blur(18px) saturate(180%);
+    -webkit-backdrop-filter: blur(18px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.55);
+    border-bottom: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    padding: 28px; width: 100%; max-width: 680px; max-height: 85vh;
+    overflow-y: auto;
+    box-shadow: var(--deep-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+.modal-header {
+    padding-bottom: 16px; margin-bottom: 20px; border-bottom: 1px solid var(--border-color);
+    display: flex; justify-content: space-between; align-items: center;
+}
+.modal-title { font-size: 18px; font-weight: 700; }
+.modal-subtitle { font-size: 12px; color: var(--text-secondary); margin-top: 4px; font-family: "JetBrains Mono", monospace; }
+.close-btn {
+    background: none; border: none; color: var(--text-secondary); font-size: 24px; cursor: pointer;
+    padding: 4px 8px; border-radius: 6px; transition: 0.15s;
+}
+.close-btn:hover { background: var(--danger); color: #fff; }
+
+/* 表单项 - 左标签右输入框 */
+.form-row {
+    display: flex; align-items: flex-start; gap: 16px;
+    padding: 14px 0; border-bottom: 1px solid var(--border-color);
+}
+.form-row:last-of-type { border-bottom: none; }
+
+.form-label {
+    width: 140px; flex-shrink: 0; padding-top: 10px;
+    font-size: 13px; color: var(--text-primary); font-weight: 600;
+}
+.form-label .hint {
+    display: block; font-size: 11px; color: var(--text-muted);
+    margin-top: 4px; font-family: "JetBrains Mono", monospace;
+}
+
+.form-input-wrap { flex: 1; min-width: 0; }
+
+.form-input,
+.form-textarea,
+.form-select {
+    width: 100%; padding: 10px 14px;
+    background: rgba(255, 255, 255, 0.7);
+    backdrop-filter: blur(18px) saturate(180%);
+    -webkit-backdrop-filter: blur(18px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.55);
+    border-bottom: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: 13px; font-family: "JetBrains Mono", monospace;
+    outline: none; transition: 0.2s;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+.form-input:focus,
+.form-textarea:focus,
+.form-select:focus {
+    border-color: var(--theme-primary); box-shadow: 0 0 0 4px var(--theme-glow), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+.form-textarea { resize: vertical; min-height: 70px; line-height: 1.6; }
+
+/* 输入框下方注释说明 */
+.form-hint {
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.5;
+    padding-left: 2px;
+}
+.form-hint::before {
+    content: "\1F4A1";
+    margin-right: 6px;
+    opacity: 0.6;
+}
+
+/* 按钮组 */
+.modal-actions {
+    display: flex; gap: 12px; justify-content: flex-end;
+    margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border-color);
+}
+.btn {
+    padding: 10px 20px; border: none; border-radius: var(--radius-sm); color: #fff;
+    font-size: 14px; font-weight: 600; cursor: pointer; transition: 0.2s;
+}
+.btn-primary { background: var(--gradient); }
+.btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 14px var(--theme-glow); }
+.btn-secondary { background: var(--bg-hover); border: 1px solid var(--border-color); color: var(--text-secondary); }
+.btn-secondary:hover { background: var(--border-color); color: var(--text-primary); }
+
+/* 加载与空状态 */
+.loading { text-align: center; padding: 40px; color: var(--text-muted); }
+
+/* 状态徽章 */
+.section-badge {
+    display: inline-block; padding: 2px 10px; border-radius: 12px;
+    font-size: 10px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.5px; margin-left: 8px; color: #fff;
+}
+.badge-main { background: linear-gradient(135deg, #ffb86c, #ff7f50); }
+.badge-config { background: #3a3a5a; color: #a0a0c0; }
+.badge-plugin { background: linear-gradient(135deg, #9370db, #00b8ba); }
+
+/* ============ 移动端适配 ============ */
+@media (max-width: 768px) {
+    .main { margin-left: 0; padding: 72px 14px 20px 14px; }
+    .page-title { font-size: 18px; text-align: center; }
+    .page-subtitle { font-size: 12px; text-align: center; margin-bottom: 16px; }
+    .grid { grid-template-columns: 1fr; gap: 12px; }
+    .plugin { padding: 14px; gap: 10px; }
+    .plugin-name { font-size: 15px; }
+    .plugin-desc { font-size: 12px; min-height: 0; }
+    .settings-btn { width: 100%; padding: 10px; }
+    .modal { padding: 16px; margin: 10px; max-height: 90vh; }
+    .modal-header { margin-bottom: 14px; padding-bottom: 12px; }
+    .modal-title { font-size: 16px; }
+    /* 表单改为纵向排列 */
+    .form-row { flex-direction: column; gap: 6px; padding: 10px 0; }
+    .form-label { width: auto; padding-top: 0; font-size: 12px; }
+    .form-input, .form-textarea, .form-select { font-size: 13px; padding: 8px 10px; }
+    .modal-actions { margin-top: 16px; padding-top: 12px; flex-direction: column-reverse; }
+    .modal-actions .btn { width: 100%; }
+}
+</style>
+</head>
+<body>
+<div id="sidebar"></div>
+<div class="main">
+    <div class="page-header">
+        <div>
+            <h1 class="page-title">插件与配置</h1>
+            <p class="page-subtitle">管理所有插件和配置项。点击「设置」编辑具体参数，开关控制启用状态。</p>
+        </div>
+        <div id="theme-container"></div>
+    </div>
+    <div id="plugins-grid" class="grid">
+        <div class="loading">加载中...</div>
+    </div>
+    
+</div>
+
+<!-- 设置模态框 -->
+<div class="modal-overlay" id="settings-modal">
+    <div class="modal">
+        <div class="modal-header">
+            <div>
+                <div class="modal-title" id="modal-title">配置</div>
+                <div class="modal-subtitle" id="modal-subtitle"></div>
+            </div>
+            <button class="close-btn" onclick="closeSettingsModal()">&times;</button>
+        </div>
+        <div id="settings-form"></div>
+        <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="closeSettingsModal()">关闭</button>
+            <button class="btn btn-primary" onclick="savePluginSettings()">保存配置</button>
+            <button class="btn" style="background:#ff9800;" onclick="testModal()">测试</button>
+        </div>
+    </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/app.js"></script>
+<script>
+let currentPlugins = [];
+let currentSection = null;
+let currentItems = [];
+
+// HTML 转义 — 防止特殊字符破坏结构
+function _escapeHtml(s) {
+    if (s === null || s === undefined) return "";
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+// 对于 textarea 内容：转义 < > & （避免破坏标签），保留换行
+function _escapeTextareaContent(s) {
+    if (s === null || s === undefined) return "";
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// 调试按钮点击
+function debugClick(i) {
+    console.log("[DEBUG] settings-btn clicked, index:", i);
+    console.log("[DEBUG] currentPlugins:", currentPlugins);
+    console.log("[DEBUG] currentPlugins[i]:", currentPlugins[i]);
+}
+
+async function loadPlugins() {
+    try {
+        const data = await api.plugins.list();
+        currentPlugins = data.plugins;
+        if (!data.plugins.length) {
+            document.getElementById("plugins-grid").innerHTML = '<div class="loading">暂无插件</div>';
+            return;
+        }
+        const html = data.plugins.map(function(p, i) {
+            const badge = p.name === "bot" ? '<span class="section-badge badge-main">主配置</span>'
+                : (p.type === "config" ? '<span class="section-badge badge-config">配置</span>'
+                : '<span class="section-badge badge-plugin">插件</span>');
+            const name = p.label || p.name;
+            const callCount = p.call_count || 0;
+            const callInfo = p.type === "plugin" && callCount > 0
+                ? '<div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">📊 调用 ' + callCount + ' 次</div>'
+                : '';
+
+            const toggleHtml = p.has_toggle ?
+                '<div class="toggle ' + (p.enabled ? "on" : "") + '" id="toggle-' + i + '" onclick="event.stopPropagation();togglePlugin(' + i + ')"></div>'
+                : '<span style="font-size:12px;color:#a0a0c0;">固定</span>';
+
+            return (
+                '<div class="plugin ' + (p.enabled ? "" : "disabled") + '">' +
+                    '<div class="plugin-header">' +
+                        '<div>' +
+                            '<div class="plugin-name">' + _escapeHtml(name) + ' ' + badge + '</div>' +
+                            '<div class="plugin-subname">' + _escapeHtml(p.name) + '</div>' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="plugin-desc">' + _escapeHtml(p.description || "") + callInfo + '</div>' +
+                    '<div class="plugin-footer">' +
+                        '<div class="status-text">' +
+                            '<span class="dot ' + (p.enabled ? "dot-on" : "dot-off") + '"></span>' +
+                            (p.enabled ? "已启用" : "已禁用") +
+                        '</div>' +
+                        toggleHtml +
+                    '</div>' +
+                    '<button class="settings-btn" onclick="openSettings(' + i + ')">⚙ 设置</button>' +
+                '</div>'
+            );
+        }).join("");
+        document.getElementById("plugins-grid").innerHTML = html;
+    } catch (e) {
+        Toast.error("加载失败: " + e.message);
+    }
+}
+
+async function togglePlugin(i) {
+    const p = currentPlugins[i];
+    if (!p) return;
+    const newState = !p.enabled;
+
+    // 立即切换 UI 状态 + 禁用点击
+    const toggleEl = document.getElementById("toggle-" + i);
+    if (toggleEl) {
+        if (newState) toggleEl.classList.add("on");
+        else toggleEl.classList.remove("on");
+        toggleEl.classList.add("saving");
+    }
+    const cardEl = toggleEl ? toggleEl.closest(".plugin") : null;
+    if (cardEl) {
+        if (newState) cardEl.classList.remove("disabled");
+        else cardEl.classList.add("disabled");
+    }
+
+    try {
+        await api.plugins.update(p.name, { enabled: newState });
+        p.enabled = newState;
+        Toast.success((p.label || p.name) + " 已" + (newState ? "启用" : "禁用"));
+    } catch (e) {
+        // 失败时回滚 UI 状态
+        if (toggleEl) {
+            if (!newState) toggleEl.classList.add("on");
+            else toggleEl.classList.remove("on");
+        }
+        if (cardEl) {
+            if (!newState) cardEl.classList.remove("disabled");
+            else cardEl.classList.add("disabled");
+        }
+        Toast.error("操作失败: " + e.message);
+    } finally {
+        if (toggleEl) toggleEl.classList.remove("saving");
+    }
+}
+
+function openSettings(i) {
+    console.log("[openSettings] 点击按钮，索引:", i);
+    const p = currentPlugins[i];
+    if (!p) {
+        console.error("[openSettings] 未找到插件，索引:", i);
+        return;
+    }
+    console.log("[openSettings] 准备加载插件:", p.name);
+    currentSection = p;
+    
+    // 动态创建模态框
+    createModal(p);
+}
+
+function createModal(plugin) {
+    // 先移除已存在的模态框
+    var existingModal = document.getElementById("settings-modal");
+    if (existingModal) {
+        existingModal.remove();
+    }
+    
+    // 创建模态框外层
+    var modalOverlay = document.createElement("div");
+    modalOverlay.id = "settings-modal";
+    modalOverlay.style.cssText = `
+        display: flex;
+        position: fixed;
+        left: 0;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(31, 58, 74, 0.5);
+        z-index: 9999;
+        align-items: center;
+        justify-content: center;
+        backdrop-filter: blur(8px);
+    `;
+    
+    // 创建模态框内层
+    var modalContent = document.createElement("div");
+    modalContent.style.cssText = `
+        background: white;
+        border-radius: 12px;
+        padding: 28px;
+        width: 100%;
+        max-width: 680px;
+        max-height: 85vh;
+        overflow-y: auto;
+        box-shadow: 0 12px 40px rgba(31, 58, 74, 0.18);
+        position: relative;
+    `;
+    
+    // 创建模态框内容
+    modalContent.innerHTML = `
+        <div style="padding-bottom: 16px; margin-bottom: 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <div style="font-size: 18px; font-weight: 700;">${plugin.label || plugin.name} - 配置</div>
+                <div style="font-size: 12px; color: #999; margin-top: 4px;">${plugin.name}</div>
+            </div>
+            <button onclick="closeSettingsModal()" style="background: none; border: none; color: #999; font-size: 24px; cursor: pointer; padding: 4px 8px;">×</button>
+        </div>
+        <div id="settings-form" style="min-height: 100px;">
+            <div style="text-align: center; padding: 40px; color: #666;">加载中...</div>
+        </div>
+        <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid #eee; display: flex; gap: 12px; justify-content: flex-end;">
+            <button onclick="closeSettingsModal()" style="padding: 10px 20px; background: #f0f0f0; border: 1px solid #ddd; border-radius: 6px; color: #666; cursor: pointer;">关闭</button>
+            <button onclick="savePluginSettings()" style="padding: 10px 20px; background: linear-gradient(135deg, #2BA89E, #3A6E8E); border: none; border-radius: 6px; color: white; cursor: pointer;">保存配置</button>
+        </div>
+    `;
+    
+    // 添加点击遮罩层关闭功能
+    modalOverlay.addEventListener("click", function(e) {
+        if (e.target === modalOverlay) {
+            closeSettingsModal();
+        }
+    });
+    
+    modalOverlay.appendChild(modalContent);
+    document.body.appendChild(modalOverlay);
+    
+    // 异步加载配置数据
+    loadPluginConfig(plugin.name);
+}
+
+async function loadPluginConfig(pluginName) {
+    try {
+        const data = await api.plugins.get(pluginName);
+        console.log("[loadPluginConfig] API 返回数据:", data);
+        currentItems = data.items || [];
+
+        if (!currentItems.length) {
+            document.getElementById("settings-form").innerHTML =
+                '<div style="text-align:center;padding:40px;color:#666;">该配置节暂无项目</div>';
+        } else {
+            const filteredItems = currentItems
+                .map(function(item, originalIdx) { return { item: item, originalIdx: originalIdx }; })
+                .filter(function(x) { return x.item.key !== "enabled"; });
+
+            let formHtml = '';
+            for (let idx = 0; idx < filteredItems.length; idx++) {
+                const x = filteredItems[idx];
+                const item = x.item;
+                const originalIdx = x.originalIdx;
+                const isList = item.is_list;
+                const hint = item.hint ? '<div style="margin-top:6px;font-size:12px;color:#999;">' + _escapeHtml(item.hint) + '</div>' : '';
+
+                if (isList) {
+                    formHtml += 
+                        '<div style="display:flex;gap:16px;padding:14px 0;border-bottom:1px solid #eee;">' +
+                            '<div style="width:140px;flex-shrink:0;padding-top:10px;font-size:13px;font-weight:600;">' + 
+                                _escapeHtml(item.label) +
+                                '<span style="display:block;font-size:11px;color:#999;margin-top:4px;">key: ' + _escapeHtml(item.key) + '</span>' +
+                            '</div>' +
+                            '<div style="flex:1;">' +
+                                '<textarea style="width:100%;padding:10px 14px;border:1px solid #ddd;border-radius:6px;font-family:monospace;font-size:13px;min-height:70px;resize:vertical;"' +
+                                    ' id="setting-' + originalIdx + '" data-key="' + _escapeHtml(item.key) + '">' + _escapeTextareaContent(item.value || "") + '</textarea>' +
+                                hint +
+                            '</div>' +
+                        '</div>';
+                } else {
+                    formHtml += 
+                        '<div style="display:flex;gap:16px;padding:14px 0;border-bottom:1px solid #eee;">' +
+                            '<div style="width:140px;flex-shrink:0;padding-top:10px;font-size:13px;font-weight:600;">' + 
+                                _escapeHtml(item.label) +
+                                '<span style="display:block;font-size:11px;color:#999;margin-top:4px;">key: ' + _escapeHtml(item.key) + '</span>' +
+                            '</div>' +
+                            '<div style="flex:1;">' +
+                                '<input type="text" style="width:100%;padding:10px 14px;border:1px solid #ddd;border-radius:6px;font-family:monospace;font-size:13px;"' +
+                                    ' id="setting-' + originalIdx + '" data-key="' + _escapeHtml(item.key) + '"' +
+                                    ' value="' + _escapeHtml(item.value || "") + '">' +
+                                hint +
+                            '</div>' +
+                        '</div>';
+                }
+            }
+            document.getElementById("settings-form").innerHTML = formHtml;
+        }
+    } catch (e) {
+        console.error("[loadPluginConfig] 加载配置失败:", e);
+        var msg = (e && e.message) ? e.message : String(e);
+        document.getElementById("settings-form").innerHTML =
+            '<div style="padding:20px;color:#d33;">加载配置失败: ' + _escapeHtml(msg) + '</div>';
+    }
+}
+
+async function savePluginSettings() {
+    if (!currentSection) return;
+    const items = [];
+    // 用 currentItems 的索引查找元素，元素的 id 是 "setting-" + 原始索引
+    for (let i = 0; i < currentItems.length; i++) {
+        const el = document.getElementById("setting-" + i);
+        if (el) {
+            items.push({
+                key: el.dataset.key,
+                value: el.value,
+            });
+        }
+    }
+    try {
+        await api.plugins.update(currentSection.name, { items: items });
+        Toast.success("配置已保存");
+        closeSettingsModal();
+        loadPlugins();
+    } catch (e) {
+        var msg = (e && e.message) ? e.message : String(e);
+        try { Toast.error("保存失败: " + msg); } catch (e2) {
+            alert("保存失败: " + msg);
+        }
+    }
+}
+
+function closeSettingsModal() {
+    var modal = document.getElementById("settings-modal");
+    if (modal) {
+        modal.remove();
+    }
+    currentSection = null;
+    currentItems = [];
+}
+
+function testModal() {
+    console.log("[testModal] 测试模态框");
+    var modalOverlay = document.getElementById("settings-modal");
+    var modalContent = document.querySelector("#settings-modal .modal");
+    console.log("模态框外层:", modalOverlay);
+    console.log("模态框内层:", modalContent);
+    
+    if (modalOverlay && modalContent) {
+        modalOverlay.style.display = "flex";
+        modalOverlay.style.position = "fixed";
+        modalOverlay.style.left = "0";
+        modalOverlay.style.top = "0";
+        modalOverlay.style.right = "0";
+        modalOverlay.style.bottom = "0";
+        modalOverlay.style.background = "rgba(31, 58, 74, 0.5)";
+        modalOverlay.style.zIndex = "9999";
+        modalOverlay.style.alignItems = "center";
+        modalOverlay.style.justifyContent = "center";
+        
+        modalContent.style.background = "white";
+        modalContent.style.borderRadius = "12px";
+        modalContent.style.padding = "28px";
+        modalContent.style.width = "100%";
+        modalContent.style.maxWidth = "680px";
+        modalContent.style.maxHeight = "85vh";
+        modalContent.style.overflowY = "auto";
+        modalContent.style.boxShadow = "0 12px 40px rgba(31, 58, 74, 0.18)";
+        modalContent.style.position = "relative";
+        
+        document.getElementById("modal-title").textContent = "测试模态框";
+        document.getElementById("modal-subtitle").textContent = "测试";
+        document.getElementById("settings-form").innerHTML = '<div style="text-align:center;padding:40px;color:#666;">模态框测试成功！</div>';
+    } else {
+        alert("模态框元素不存在");
+    }
+}
+
+if (window.ThemeManager) window.ThemeManager.render("#theme-container");
+renderSidebar("plugins");
+requireAuth().then(function(ok) { if (ok) loadPlugins(); });
+</script>
+</body>
+</html>

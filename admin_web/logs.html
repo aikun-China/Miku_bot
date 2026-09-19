@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MikuBot - 运行日志</title>
+<link rel="stylesheet" href="/css/style.css">
+<script src="/js/theme.js"></script>
+<script src="/js/app.js"></script>
+<script src="/js/api.js"></script>
+<style>
+body { font-family: "Noto Sans SC", sans-serif; min-height: 100vh; background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 50%, var(--theme-glow) 100%); color: var(--text-primary); }
+
+/* 页面容器 */
+.page { display: flex; min-height: 100vh; }
+.main {
+    flex: 1;
+    margin-left: 240px;
+    padding: 28px 32px;
+    min-height: 100vh;
+}
+
+/* 页面标题 */
+.page-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+.page-title {
+    font-size: 22px;
+    font-weight: 700;
+    background: var(--gradient);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+.header-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+/* 按钮样式 */
+.btn {
+    padding: 8px 16px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-color);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+}
+.btn:hover { background: var(--bg-hover); color: var(--theme-primary); border-color: var(--theme-primary); transform: translateY(-1px); }
+.btn-primary { background: var(--gradient); color: #fff; border: none; }
+.btn-primary:hover { box-shadow: var(--shadow); transform: translateY(-1px); }
+.btn-danger { color: var(--danger); border-color: var(--danger); }
+.btn-danger:hover { background: var(--danger); color: #fff; }
+
+/* 自动刷新状态 */
+.auto-refresh-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    background: rgba(255, 100, 100, 0.15);
+    color: var(--danger);
+    border: 1px solid rgba(255, 100, 100, 0.3);
+}
+.auto-refresh-badge.active {
+    background: rgba(43, 168, 158, 0.15);
+    color: var(--theme-primary);
+    border-color: rgba(43, 168, 158, 0.3);
+}
+.dot-pulse {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: currentColor;
+    animation: pulse 1.2s ease-in-out infinite;
+}
+@keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.7); } }
+
+/* 日志布局：左侧文件列表 + 右侧内容 */
+.logs-layout { display: flex; gap: 20px; height: calc(100vh - 120px); }
+
+/* 文件列表 */
+.file-list {
+    width: 240px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.file-list-title {
+    font-size: 12px;
+    color: var(--text-muted);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    padding: 4px 8px;
+    margin-bottom: 4px;
+}
+.file-card {
+    padding: 12px 14px;
+    background: var(--bg-card);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1.5px solid var(--border-color);
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: all 0.2s;
+    box-shadow: var(--shadow);
+}
+.file-card:hover { border-color: var(--theme-primary); background: var(--bg-hover); transform: translateY(-1px); }
+.file-card.active {
+    background: linear-gradient(135deg, var(--theme-glow), var(--bg-card));
+    border-color: var(--theme-primary);
+    box-shadow: 0 4px 16px var(--theme-glow);
+}
+.file-date { font-size: 14px; font-weight: 600; color: var(--text-primary); margin-bottom: 4px; }
+.file-meta { font-size: 11px; color: var(--text-muted); display: flex; justify-content: space-between; }
+
+/* 日志内容区 */
+.log-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-card);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1.5px solid var(--border-color);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+}
+.log-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border-color);
+    background: rgba(255, 255, 255, 0.4);
+    gap: 12px;
+    flex-wrap: wrap;
+}
+.log-info { font-size: 13px; color: var(--text-secondary); display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.log-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.log-lines {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 16px;
+    font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
+    font-size: 12px;
+    line-height: 1.8;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+.log-lines::-webkit-scrollbar { width: 6px; }
+.log-lines::-webkit-scrollbar-track { background: transparent; }
+.log-lines::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
+.log-line { display: block; padding: 1px 4px; border-radius: 3px; }
+.log-line:hover { background: rgba(255, 255, 255, 0.5); }
+
+/* 日志级别颜色 */
+.level-DEBUG { color: #888; }
+.level-INFO { color: var(--theme-primary); }
+.level-SUCCESS { color: var(--success); }
+.level-WARNING { color: var(--warning); }
+.level-ERROR { color: var(--danger); }
+.level-CRITICAL { color: var(--danger); font-weight: 700; background: rgba(214, 69, 69, 0.1); }
+
+/* 空状态 */
+.empty-state {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    font-size: 14px;
+    padding: 40px;
+    text-align: center;
+    gap: 12px;
+}
+.empty-icon { font-size: 48px; opacity: 0.4; }
+.loading-state {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    font-size: 14px;
+    gap: 12px;
+}
+.spinner {
+    width: 20px; height: 20px;
+    border: 2px solid var(--border-color);
+    border-top-color: var(--theme-primary);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* 过滤控件 */
+.filter-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.filter-btn {
+    padding: 4px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--border-color);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.filter-btn:hover { border-color: var(--theme-primary); color: var(--theme-primary); }
+.filter-btn.active { background: var(--theme-glow); color: var(--theme-primary); border-color: var(--theme-primary); font-weight: 600; }
+.level-filter-debug { }
+.level-filter-info { }
+.level-filter-warning { }
+.level-filter-error { }
+
+/* 移动端适配 */
+@media (max-width: 768px) {
+    .main { margin-left: 0; padding: 16px; padding-top: 68px; }
+    .logs-layout { flex-direction: column; height: auto; }
+    .file-list { width: 100%; flex-direction: row; overflow-x: auto; padding-bottom: 8px; }
+    .file-card { min-width: 160px; flex-shrink: 0; }
+    .log-content { min-height: 400px; }
+}
+</style>
+</head>
+<body>
+<div class="page">
+    <div id="sidebar"></div>
+    <main class="main">
+        <div class="page-header">
+            <div class="page-title">📋 运行日志</div>
+            <div class="header-actions">
+                <button class="btn btn-primary" id="btnRefresh" onclick="loadCurrentFile()">↻ 刷新</button>
+                <button class="btn" id="btnAutoRefresh" onclick="toggleAutoRefresh()">
+                    <span id="autoRefreshLabel">自动刷新：关</span>
+                </button>
+                <button class="btn" id="btnTop" onclick="scrollToTop()" title="回到顶部">↑ 顶部</button>
+                <button class="btn" id="btnBottom" onclick="scrollToBottom()" title="滚动到底部">↓ 底部</button>
+            </div>
+        </div>
+
+        <div class="logs-layout">
+            <!-- 左侧：文件列表 -->
+            <div class="file-list">
+                <div class="file-list-title">日志文件</div>
+                <div id="fileList">
+                    <div class="loading-state"><div class="spinner"></div>加载中...</div>
+                </div>
+            </div>
+
+            <!-- 右侧：日志内容 -->
+            <div class="log-content">
+                <div class="log-toolbar">
+                    <div class="log-info" id="logInfo">
+                        <span>选择日志文件查看内容</span>
+                    </div>
+                    <div class="log-actions">
+                        <div class="filter-bar" id="filterBar">
+                            <button class="filter-btn active" data-level="ALL" onclick="setLevelFilter('ALL')">全部</button>
+                            <button class="filter-btn level-filter-info" data-level="INFO" onclick="setLevelFilter('INFO')">INFO</button>
+                            <button class="filter-btn level-filter-warning" data-level="WARNING" onclick="setLevelFilter('WARNING')">WARN</button>
+                            <button class="filter-btn level-filter-error" data-level="ERROR" onclick="setLevelFilter('ERROR')">ERROR</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="log-lines" id="logLines">
+                    <div class="empty-state">
+                        <div class="empty-icon">📋</div>
+                        <div>请选择左侧日志文件</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+</div>
+
+<script>
+// ==================== 全局状态 ====================
+var currentFile = "";
+var allLines = [];           // 原始日志行
+var filteredLines = [];       // 过滤后的日志行
+var levelFilter = "ALL";     // 当前级别过滤
+var autoRefresh = false;
+var autoRefreshTimer = null;
+var refreshInterval = 3000; // 3秒刷新一次
+
+// ==================== 初始化 ====================
+(async function() {
+    var authed = await window.requireAuth();
+    if (!authed) return;
+    window.renderSidebar("logs");
+    await loadFileList();
+})();
+
+// ==================== 文件列表 ====================
+async function loadFileList() {
+    try {
+        var data = await window.api.logs.list();
+        var files = data.files || [];
+        var html = [];
+        if (files.length === 0) {
+            html.push('<div class="empty-state" style="padding:20px;font-size:13px;">暂无日志文件</div>');
+        } else {
+            files.forEach(function(f, i) {
+                var active = i === 0 ? " active" : "";
+                html.push(
+                    '<div class="file-card' + active + '" onclick="selectFile(\'' + f.name + '\')" id="file-' + f.name + '">' +
+                    '  <div class="file-date">' + f.date + '</div>' +
+                    '  <div class="file-meta">' +
+                    '    <span>' + f.size_str + '</span>' +
+                    '    <span>' + f.mtime + '</span>' +
+                    '  </div>' +
+                    '</div>'
+                );
+            });
+        }
+        document.getElementById("fileList").innerHTML = html.join("");
+        // 自动加载第一个文件
+        if (files.length > 0) {
+            selectFile(files[0].name);
+        }
+    } catch (e) {
+        document.getElementById("fileList").innerHTML =
+            '<div class="empty-state" style="padding:20px;font-size:13px;color:var(--danger);">加载失败: ' + e.message + '</div>';
+    }
+}
+
+// ==================== 选择文件 ====================
+async function selectFile(filename) {
+    currentFile = filename;
+    // 更新选中状态
+    document.querySelectorAll(".file-card").forEach(function(el) { el.classList.remove("active"); });
+    var card = document.getElementById("file-" + filename);
+    if (card) card.classList.add("active");
+    await loadCurrentFile();
+}
+
+async function loadCurrentFile() {
+    if (!currentFile) return;
+    try {
+        var data = await window.api.logs.get(currentFile, 500);
+        if (data.error) {
+            window.Toast.error("读取失败: " + data.error);
+            return;
+        }
+        allLines = data.lines || [];
+        filteredLines = allLines;
+        applyLevelFilter();
+        document.getElementById("logInfo").innerHTML =
+            '<span style="font-weight:600;color:var(--theme-primary);">' + data.filename + '</span>' +
+            '<span>' + (data.total || 0) + ' 行</span>' +
+            '<span>' + (data.size_str || "") + '</span>' +
+            (data.has_more ? '<span style="color:var(--warning);">（仅显示最新 500 行）</span>' : "");
+        if (autoRefresh) {
+            setTimeout(scrollToBottom, 100);
+        }
+    } catch (e) {
+        window.Toast.error("加载日志失败: " + e.message);
+    }
+}
+
+// ==================== 渲染日志 ====================
+function renderLogs() {
+    var el = document.getElementById("logLines");
+    if (filteredLines.length === 0) {
+        el.innerHTML = '<div class="empty-state"><div class="empty-icon">🔍</div><div>没有匹配的日志行</div></div>';
+        return;
+    }
+    var html = [];
+    filteredLines.forEach(function(line) {
+        var cls = getLevelClass(line);
+        // 转义 HTML 特殊字符
+        var safe = line
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+        html.push('<div class="log-line ' + cls + '">' + safe + '</div>');
+    });
+    el.innerHTML = html.join("");
+    if (autoRefresh) scrollToBottom();
+}
+
+function getLevelClass(line) {
+    if (/\[DEBUG\]|\bDEBUG\b/.test(line)) return "level-DEBUG";
+    if (/\[INFO\]|\bINFO\b/.test(line)) return "level-INFO";
+    if (/\[SUCCESS\]|\bSUCCESS\b/.test(line)) return "level-SUCCESS";
+    if (/\[WARNING\]|\[WARN\]|\bWARNING\b|\bWARN\b/.test(line)) return "level-WARNING";
+    if (/\[ERROR\]|\bERROR\b/.test(line)) return "level-ERROR";
+    if (/\[CRITICAL\]|\bCRITICAL\b/.test(line)) return "level-CRITICAL";
+    return "";
+}
+
+// ==================== 级别过滤 ====================
+function setLevelFilter(level) {
+    levelFilter = level;
+    document.querySelectorAll(".filter-btn").forEach(function(btn) {
+        btn.classList.toggle("active", btn.dataset.level === level);
+    });
+    applyLevelFilter();
+}
+
+function applyLevelFilter() {
+    if (levelFilter === "ALL") {
+        filteredLines = allLines;
+    } else {
+        filteredLines = allLines.filter(function(line) {
+            var pat = {
+                "INFO": /\[INFO\]|\bINFO\b/,
+                "WARNING": /\[WARNING\]|\[WARN\]|\bWARNING\b|\bWARN\b/,
+                "ERROR": /\[ERROR\]|\bERROR\b/,
+            }[levelFilter];
+            return pat && pat.test(line);
+        });
+    }
+    renderLogs();
+}
+
+// ==================== 自动刷新 ====================
+function toggleAutoRefresh() {
+    autoRefresh = !autoRefresh;
+    var badge = document.getElementById("btnAutoRefresh");
+    var label = document.getElementById("autoRefreshLabel");
+    if (autoRefresh) {
+        badge.classList.add("active");
+        label.textContent = "自动刷新：开";
+        badge.style.color = "var(--theme-primary)";
+        badge.style.borderColor = "var(--theme-primary)";
+        autoRefreshTimer = setInterval(loadCurrentFile, refreshInterval);
+        window.Toast.success("已开启自动刷新（每 3 秒）");
+    } else {
+        badge.classList.remove("active");
+        label.textContent = "自动刷新：关";
+        badge.style.color = "";
+        badge.style.borderColor = "";
+        if (autoRefreshTimer) {
+            clearInterval(autoRefreshTimer);
+            autoRefreshTimer = null;
+        }
+        window.Toast.info("已关闭自动刷新");
+    }
+}
+
+// ==================== 滚动控制 ====================
+function scrollToTop() {
+    var el = document.getElementById("logLines");
+    el.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function scrollToBottom() {
+    var el = document.getElementById("logLines");
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+}
+
+// ==================== 键盘快捷键 ====================
+document.addEventListener("keydown", function(e) {
+    // Ctrl+R: 刷新
+    if (e.ctrlKey && e.key === "r") {
+        e.preventDefault();
+        loadCurrentFile();
+    }
+    // Ctrl+F: 切换过滤
+    if (e.ctrlKey && e.key === "f") {
+        e.preventDefault();
+        var levels = ["ALL", "INFO", "WARNING", "ERROR"];
+        var idx = levels.indexOf(levelFilter);
+        setLevelFilter(levels[(idx + 1) % levels.length]);
+    }
+});
+</script>
+</body>
+</html>

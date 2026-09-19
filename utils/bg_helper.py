@@ -40,8 +40,23 @@ KEYWORD_MAP: Dict[str, List[str]] = {
         "weather_bg", "weather_card", "weather",
         "天气", "天气预报", "天气卡片", "tianqi",
     ],
+    "menu": [
+        "menu_bg", "menu_card", "menu",
+        "菜单", "菜单背景", "功能菜单", "初音", "miku",
+    ],
+    "ai": [
+        "ai_bg", "ai_card", "ai", "chat_bg",
+        "AI背景", "聊天背景", "miku_bg", "初音背景",
+    ],
+    "profile": [
+        "profile_bg", "profile_card", "profile",
+        "个人资料", "资料", "我的信息", "用户信息", "avatar", "头像",
+    ],
+    "shop": [
+        "shop_bg", "shop_card", "shop",
+        "商店", "商城", "商店背景", "商品卡",
+    ],
 }
-
 # 支持的扩展名
 SUPPORTED_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
@@ -49,6 +64,10 @@ SUPPORTED_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 STANDARD_NAMES = {
     "checkin": "checkin_bg.png",
     "weather": "weather_bg.png",
+    "menu": "menu_bg.png",
+    "ai": "ai_bg.png",
+    "profile": "profile_bg.png",
+    "shop": "shop_bg.png",
 }
 
 
@@ -141,6 +160,54 @@ def find_and_load_bg(purpose: str, templates_dir: Optional[Path] = None) -> str:
     return load_bg_as_data_uri(p)
 
 
+def get_image_size(image_path: Path) -> Optional[tuple]:
+    """
+    获取图片尺寸（宽度, 高度）。失败返回 None。
+    优先根据文件头判断格式，避免后缀名与实际格式不符（如 .png 实为 JPEG）。
+    """
+    path = Path(image_path)
+    if not path.is_file():
+        return None
+    try:
+        import struct
+        with open(path, 'rb') as f:
+            header = f.read(24)
+        # PNG
+        if len(header) >= 24 and header[:8] == b'\x89PNG\r\n\x1a\n':
+            width = struct.unpack('>I', header[16:20])[0]
+            height = struct.unpack('>I', header[20:24])[0]
+            return (width, height)
+        # JPEG
+        if header[:2] == b'\xff\xd8':
+            with open(path, 'rb') as f:
+                f.seek(2)
+                while True:
+                    marker = f.read(2)
+                    if not marker or len(marker) < 2:
+                        break
+                    if marker[0] != 0xff:
+                        break
+                    if marker[1] in (0xd8, 0xd9, 0x01):
+                        continue
+                    if marker[1] in range(0xd0, 0xd9):
+                        continue
+                    len_bytes = f.read(2)
+                    if len(len_bytes) < 2:
+                        break
+                    length = struct.unpack('>H', len_bytes)[0]
+                    if marker[1] in (0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf):
+                        raw = f.read(6)
+                        if len(raw) < 6:
+                            break
+                        height = struct.unpack('>H', raw[1:3])[0]
+                        width = struct.unpack('>H', raw[3:5])[0]
+                        return (width, height)
+                    f.seek(length - 2, 1)
+        return None
+    except Exception:
+        return None
+
+
 # ======================================================================
 # 安装用（给 setup_images.py 调用）
 # ======================================================================
@@ -148,7 +215,7 @@ def find_and_load_bg(purpose: str, templates_dir: Optional[Path] = None) -> str:
 def detect_purpose_from_filename(filename: str) -> Optional[str]:
     """反向：根据文件名判断它最可能是哪个业务的底图（用于自动改名）。"""
     # 按 purpose 扫描，命中就返回
-    for purpose in ["checkin", "weather"]:
+    for purpose in ["checkin", "weather", "menu", "ai", "profile", "shop"]:
         if _name_match(purpose, filename):
             return purpose
     # 没命中任何业务 -> None

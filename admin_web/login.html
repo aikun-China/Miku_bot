@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>登录 - MikuBot 管理后台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/style.css">
+<script src="/js/theme.js"></script>
+<style>
+body { min-height: 100vh; background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 50%, var(--theme-glow) 100%); }
+.login-container { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+.login-card { 
+    background: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(18px) saturate(180%);
+    -webkit-backdrop-filter: blur(18px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.6);
+    border-radius: 20px;
+    padding: 48px;
+    width: 100%;
+    max-width: 420px;
+    box-shadow: 0 12px 40px rgba(43, 168, 158, 0.18);
+}
+.login-header { text-align: center; margin-bottom: 32px; }
+.login-logo {
+    width: 120px; height: 120px;
+    margin: 0 auto 16px;
+    border-radius: 20px;
+    overflow: hidden;
+    box-shadow: 0 8px 28px var(--theme-glow);
+}
+.login-logo img {
+    width: 100%; height: 100%;
+    object-fit: cover;
+    display: block;
+}
+.login-title { 
+    font-size: 24px; font-weight: 700; 
+    background: var(--gradient);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+.login-subtitle { font-size: 14px; color: var(--text-secondary); margin-top: 8px; }
+.form-group { margin-bottom: 20px; }
+.form-label { display: block; font-size: 14px; color: var(--text-secondary); margin-bottom: 8px; }
+.form-input {
+    width: 100%; padding: 14px 16px;
+    background: rgba(255, 255, 255, 0.7);
+    backdrop-filter: blur(10px);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    color: var(--text-primary);
+    font-size: 15px;
+    outline: none;
+    transition: all 0.3s;
+}
+.form-input:focus { border-color: var(--theme-primary); box-shadow: 0 0 0 4px var(--theme-glow); }
+.form-input::placeholder { color: var(--text-muted); }
+.btn {
+    width: 100%; padding: 14px;
+    background: var(--gradient);
+    border: none; border-radius: 12px;
+    color: white; font-size: 15px; font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s;
+    box-shadow: 0 4px 16px var(--theme-glow);
+}
+.btn:hover { transform: translateY(-2px); box-shadow: 0 8px 24px var(--theme-glow); }
+.btn:active { transform: translateY(0); }
+.btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+.error-message { 
+    color: var(--danger); font-size: 13px; 
+    padding: 12px; margin-top: 16px;
+    background: rgba(214, 69, 69, 0.1);
+    border-radius: 10px;
+    display: none;
+}
+.loading-spinner {
+    width: 20px; height: 20px;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-right: 8px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="login-container">
+    <div class="login-card">
+        <div class="login-header">
+            <div class="login-logo"><img src="/login_logo.png" alt="MikuBot" onerror="this.style.display='none';this.parentNode.style.fontSize='64px';this.parentNode.textContent='🤖';"></div>
+            <div class="login-title">MikuBot</div>
+            <div class="login-subtitle">管理后台</div>
+        </div>
+        
+        <form id="login-form" onsubmit="return false;">
+            <div class="form-group">
+                <label class="form-label">密码</label>
+                <input type="password" id="password" class="form-input" placeholder="请输入密码" autocomplete="off">
+            </div>
+            
+            <button type="submit" id="login-btn" class="btn" onclick="handleLogin()">登 录</button>
+            
+            <div id="error-msg" class="error-message"></div>
+        </form>
+    </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script>
+async function handleLogin() {
+    const password = document.getElementById('password').value.trim();
+    const btn = document.getElementById('login-btn');
+    const errorMsg = document.getElementById('error-msg');
+    
+    if (!password) {
+        showError('请输入密码');
+        return;
+    }
+    
+    btn.disabled = true;
+    btn.innerHTML = '<span class="loading-spinner"></span>登录中...';
+    errorMsg.style.display = 'none';
+    
+    try {
+        const response = await fetch('/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password: password })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            // 使用 TokenManager 保存 token
+            if (window.TokenManager) {
+                window.TokenManager.set(data.data.access_token);
+            } else {
+                localStorage.setItem('admin_token', data.data.access_token);
+            }
+            window.location.href = '/dashboard';
+        } else {
+            showError(data.message || '登录失败');
+        }
+    } catch (error) {
+        showError('网络连接失败，请确认 Bot 正在运行');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '登 录';
+    }
+}
+
+function showError(message) {
+    const errorMsg = document.getElementById('error-msg');
+    errorMsg.textContent = message;
+    errorMsg.style.display = 'block';
+}
+
+document.getElementById('password').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+        handleLogin();
+    }
+});
+
+if (window.ThemeManager) ThemeManager.apply(window.ThemeManager.current());
+</script>
+</body>
+</html>

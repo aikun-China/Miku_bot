@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            width: {card_width}px; 
+            min-height: {card_height}px; 
+            font-family: "PingFang SC", "Microsoft YaHei", sans-serif; 
+            position: relative; 
+            color: #1a1a2e; 
+            background: #1a1a2e url("{bg_data_uri}") center center / cover no-repeat;
+            overflow: hidden;
+        }
+        
+        body::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: rgba(26, 26, 46, 0.2);
+            z-index: 0;
+        }
+        
+        .bg-gradient {
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(ellipse at 30% 20%, rgba(57, 197, 187, 0.1) 0%, transparent 50%),
+                        radial-gradient(ellipse at 70% 80%, rgba(57, 197, 187, 0.08) 0%, transparent 50%);
+            z-index: 1;
+        }
+
+        .container { 
+            position: relative; 
+            z-index: 10; 
+            padding: 36px 32px; 
+        }
+
+        .header { 
+            text-align: center; 
+            margin-bottom: 32px; 
+            position: relative;
+        }
+        
+        .header-decoration {
+            position: absolute;
+            top: -20px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 200px;
+            height: 40px;
+            background: linear-gradient(90deg, transparent, rgba(57, 197, 187, 0.3), transparent);
+            border-radius: 20px;
+            filter: blur(20px);
+        }
+        
+        .header-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+        
+        .badge-index {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 42px;
+            height: 42px;
+            background: linear-gradient(135deg, #39C5BB, #2DA89E);
+            border-radius: 12px;
+            font-size: 18px;
+            font-weight: 700;
+            color: #fff;
+            box-shadow: 0 4px 16px rgba(57, 197, 187, 0.4);
+        }
+        
+        .badge-icon {
+            font-size: 48px;
+        }
+        
+        .header-title { 
+            font-size: 34px; 
+            font-weight: 700; 
+            color: #fff; 
+            letter-spacing: 4px; 
+            text-shadow: 0 2px 10px rgba(0,0,0,0.3);
+        }
+        
+        .header-divider {
+            width: 80px;
+            height: 3px;
+            background: linear-gradient(90deg, #39C5BB, #5DDDD4);
+            margin: 16px auto 0;
+            border-radius: 2px;
+        }
+
+        .section { 
+            background: rgba(255, 255, 255, 0.35);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 20px;
+            padding: 22px 26px;
+            margin-bottom: 20px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .section::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 4px;
+            height: 100%;
+            background: linear-gradient(180deg, #39C5BB, #5DDDD4);
+            border-radius: 2px;
+        }
+        
+        .section-title { 
+            font-size: 16px; 
+            font-weight: 600; 
+            color: #fff; 
+            margin-bottom: 14px; 
+            padding-left: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .section-title::after {
+            content: "";
+            flex: 1;
+            height: 1px;
+            background: linear-gradient(90deg, rgba(255,255,255,0.3), transparent);
+            margin-left: 12px;
+        }
+        
+        .desc-content { 
+            font-size: 14px; 
+            line-height: 1.8; 
+            color: rgba(255,255,255,0.9); 
+            padding-left: 12px;
+        }
+        
+        .commands-list { 
+            display: flex; 
+            flex-wrap: wrap; 
+            gap: 10px; 
+            padding-left: 12px;
+        }
+        
+        .command-tag { 
+            background: rgba(57, 197, 187, 0.5);
+            border: 1px solid rgba(57, 197, 187, 0.4);
+            border-radius: 16px;
+            padding: 8px 16px;
+            font-size: 14px;
+            color: #fff;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        
+        .command-tag:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 16px rgba(57, 197, 187, 0.3);
+        }
+        
+        .usage-box { 
+            background: rgba(0, 0, 0, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 14px;
+            padding: 18px 22px;
+            font-size: 13.5px;
+            line-height: 1.9;
+            color: rgba(255,255,255,0.9);
+            font-family: "Consolas", "Monaco", "Microsoft YaHei", monospace; 
+            white-space: pre-wrap;
+            margin-left: 12px;
+            position: relative;
+        }
+        
+        .usage-box::before {
+            content: "";
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            width: 8px;
+            height: 8px;
+            background: #39C5BB;
+            border-radius: 50%;
+            opacity: 0.8;
+        }
+
+        .footer { 
+            text-align: center; 
+            margin-top: 32px; 
+            padding-top: 22px; 
+            border-top: 1px solid rgba(255, 255, 255, 0.3); 
+        }
+        
+        .footer-text {
+            font-size: 12px; 
+            color: rgba(255,255,255,0.7); 
+            letter-spacing: 2px;
+        }
+        
+        .footer-hint {
+            font-size: 10.5px;
+            color: rgba(255,255,255,0.6);
+            margin-top: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="bg-gradient"></div>
+    
+    <div class="container">
+        <div class="header">
+            <div class="header-decoration"></div>
+            <div class="header-badge">
+                {header_icon_html}
+            </div>
+            <div class="header-title">{plugin_name}</div>
+            <div class="header-divider"></div>
+        </div>
+
+        {sections_html}
+
+        <div class="footer">
+            <div class="footer-text">MIKUBOT · HATSUNE MIKU</div>
+            <div class="footer-hint">Powered by NoneBot</div>
+        </div>
+    </div>
+</body>
+</html>

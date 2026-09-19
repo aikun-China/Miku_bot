@@ -25,8 +25,11 @@ psutil>=7.0.0
 # === 浏览器截图 ===
 playwright>=1.60.0
 
+# === 图片处理（AI 识图表情包去重）===
+Pillow>=10.0.0
+imagehash>=4.3.0
+
 # === 可选（后续开发）===
 # sqlalchemy
 # aiosqlite
-# pillow
 # aiofiles

@@ -66,15 +66,23 @@ def _truncate_msg(msg: str) -> str:
 
     try:
         # 🔴 规则 0：notice 心跳事件 — 直接截断到前缀，彻底不展开 dict
-        #    例如：notice.notify.input_status / notice.friend_add
-        if "[notice." in msg or "'notice_type':" in msg:
+        #    例如：OneBot V11 xxx | [notice.notify.input_status]: {...}
+        #    只在前 200 字符内匹配，避免误匹配消息正文
+        prefix = msg[:200]
+        is_notice = False
+        if " | [notice." in prefix or prefix.startswith("[notice."):
+            is_notice = True
+        elif "'notice_type':" in prefix and "{" in prefix[:50]:
+            is_notice = True
+        if is_notice:
             end_marker = msg.find("]:")
             if end_marker > 0:
                 return msg[: end_marker + 2]
             return msg[:80] + ("..." if len(msg) > 80 else "")
 
         # 规则 1：大段 dict 消息（message_sent / message.group.* 等）
-        if "'raw_message':" in msg or "'message_type':" in msg:
+        # 只在前 200 字符内匹配，避免误匹配消息正文
+        if "'raw_message':" in prefix or "'message_type':" in prefix:
             message_type = ""
             raw_message = ""
             group_name = ""
@@ -257,11 +265,12 @@ def _log_format(record: dict) -> str:
                 return "LOG_FORMAT_ERROR\n"
 
 
-_DISPLAY_LOG_LEVEL = 20  # INFO 及以上显示（=20）
-# 通过 .env 或 YAML 可以调整显示等级
+_DISPLAY_LOG_LEVEL = 25  # SUCCESS 及以上显示（=25），控制台不输出 INFO
+# 通过 .env 的 CONSOLE_LOG_LEVEL 可调整“控制台”显示等级（默认 SUCCESS）
+# 与 NoneBot 的 LOG_LEVEL 解耦：LOG_LEVEL 仅影响 NoneBot 内部日志，文件日志固定 DEBUG 起
 try:
     import os as _os
-    _env_level = str(_os.environ.get("LOG_LEVEL", "INFO")).strip().upper()
+    _env_level = str(_os.environ.get("CONSOLE_LOG_LEVEL", "SUCCESS")).strip().upper()
     _level_map = {"TRACE": 5, "DEBUG": 10, "INFO": 20, "SUCCESS": 25,
                   "WARNING": 30, "ERROR": 40, "CRITICAL": 50}
     if _env_level in _level_map:
@@ -290,6 +299,17 @@ def _log_filter(record: dict) -> bool:
         # 3) 过长的 dict 事件消息（>200 字符且含内部字段）也丢掉
         if len(msg) > 200 and ("'self_id':" in msg or "'post_type':" in msg or "'notice_type':" in msg):
             return False
+
+        # 4) 过滤 NoneBot 启动阶段的冗余日志
+        module_name = record.get("name", "")
+        if module_name == "nonebot":
+            # 丢弃每个插件逐条加载的日志（太刷屏），仅保留异常
+            if any(kw in msg for kw in (
+                "Succeeded to load plugin",
+                "Failed to import",
+                "Loaded plugins:",
+            )):
+                return False
 
         return True
     except Exception:
@@ -324,7 +344,7 @@ def _apply_logging():
                     pass
         except Exception:
             pass
-        _safe_print(f"[OK] 已重置日志系统（清理 {_removed} 个旧 handler）")
+        _safe_print(f"[OK] 日志系统就绪")
     except Exception as _e:
         _safe_print(f"[WARN] 清除旧日志 handler 失败: {_e}")
 
@@ -422,11 +442,7 @@ def _collect_plugin_keywords() -> None:
         if len(kw) < 2:
             _AUTO_KEYWORDS.discard(kw)
 
-    _safe_print(f"[OK] 扫描 {total} 个 Matcher，发现 {len(_AUTO_KEYWORDS)} 个指令关键词")
-    if _AUTO_KEYWORDS:
-        sample = sorted(_AUTO_KEYWORDS)[:8]
-        suffix = "..." if len(_AUTO_KEYWORDS) > 8 else ""
-        _safe_print(f"     示例: {', '.join(sample)}{suffix}")
+    _safe_print(f"[OK] 已加载 {len(_AUTO_KEYWORDS)} 个指令关键词")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -567,6 +583,19 @@ if __name__ == "__main__":
     except Exception as e:
         logger.warning(f"配置管理器加载失败: {e}")
 
+    # Web 管理后台（挂载到同一个端口）
+    try:
+        import utils.webui
+    except Exception as e:
+        logger.warning(f"WebUI 加载失败: {e}")
+
+    # ── 🔵 启动时提示版本信息 ──
+    try:
+        from utils.version_manager import get_local_version, format_version_info
+        _safe_print("[INFO] " + format_version_info(get_local_version()))
+    except Exception:
+        pass
+
     # 加载插件
     nonebot.load_builtin_plugins("echo")
     nonebot.load_from_toml("pyproject.toml")
@@ -583,5 +612,17 @@ if __name__ == "__main__":
         start_cleanup(driver)
     except Exception as e:
         logger.warning(f"缓存清理任务初始化失败: {e}")
+
+    # ── 🔵 数据库和缓存系统初始化 ──
+    try:
+        import asyncio
+
+        async def _db_init():
+            from utils.db_init import initialize_all
+            await initialize_all()
+
+        asyncio.get_event_loop().run_until_complete(_db_init())
+    except Exception as e:
+        logger.warning(f"数据库初始化失败: {e}")
 
     nonebot.run()
