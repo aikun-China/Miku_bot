@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>配置编辑 - MikuBot 管理后台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/style.css">
+<script src="/js/theme.js"></script>
+<style>
+body{font-family:"Noto Sans SC",sans-serif;background:linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 50%, var(--theme-glow) 100%);color:var(--text-primary);}
+.main{min-height:100vh;padding:28px 32px;margin-left:260px;}
+.page-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:12px;}
+.page-title{font-size:22px;font-weight:700;margin-bottom:8px;color:var(--text-primary);}
+.page-hint{color:var(--text-secondary);font-size:13px;margin-bottom:0;}
+.card{
+    background:rgba(255,255,255,0.7);
+    backdrop-filter:blur(18px) saturate(180%);
+    -webkit-backdrop-filter:blur(18px) saturate(180%);
+    border:1px solid var(--border-color);
+    border-radius:var(--radius);
+    padding:20px;margin-bottom:20px;
+    box-shadow:0 8px 32px rgba(31,58,74,0.10),inset 0 1px 0 rgba(255,255,255,0.6);
+}
+.card-title{font-size:16px;font-weight:600;margin-bottom:12px;color:var(--text-primary);}
+.btn{padding:10px 18px;background:linear-gradient(135deg,#2BA89E,#3A6E8E);border:none;border-radius:var(--radius-sm);color:#fff;font-size:14px;font-weight:600;cursor:pointer;transition:0.2s;}
+.btn:hover{transform:translateY(-1px);box-shadow:0 8px 20px var(--theme-glow);}
+.btn-sec{background:rgba(255,255,255,0.7);border:1px solid var(--border-color);color:var(--text-secondary);backdrop-filter:blur(18px) saturate(180%);-webkit-backdrop-filter:blur(18px) saturate(180%);}
+.btn-sec:hover{background:rgba(255,255,255,0.9);color:var(--text-primary);}
+.btn-danger{background:linear-gradient(135deg,#D64545,#B83535);color:#fff;}
+.btn-danger:hover{box-shadow:0 8px 20px rgba(214,69,69,0.32);}
+.btn-sm{padding:6px 12px;font-size:12px;}
+.editor{
+    width:100%;min-height:500px;padding:14px;
+    background:rgba(255,255,255,0.7);
+    backdrop-filter:blur(18px) saturate(180%);
+    -webkit-backdrop-filter:blur(18px) saturate(180%);
+    border:1px solid var(--border-color);
+    border-radius:var(--radius-sm);
+    color:var(--text-primary);
+    font-family:"JetBrains Mono",monospace;font-size:13px;line-height:1.6;
+    outline:none;resize:vertical;transition:0.2s;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.6);
+}
+.editor:focus{border-color:var(--theme-primary);box-shadow:0 0 0 4px var(--theme-glow),inset 0 1px 0 rgba(255,255,255,0.6);}
+.actions{display:flex;gap:12px;justify-content:flex-end;margin-top:16px;flex-wrap:wrap;}
+.item{
+    display:flex;justify-content:space-between;align-items:center;
+    padding:10px 14px;background:var(--bg-hover);
+    border-radius:var(--radius-sm);margin-bottom:8px;
+    border:1px solid transparent;
+    transition:0.2s;
+}
+.item:hover{border-color:var(--border-color);background:rgba(43,168,158,0.18);}
+.item-name{font-family:"JetBrains Mono",monospace;font-size:13px;color:var(--text-secondary);}
+.modal-overlay{
+    position:fixed;inset:0;
+    background:rgba(31,58,74,0.35);
+    backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+    z-index:9998;display:none;align-items:center;justify-content:center;
+}
+.modal-overlay.show{display:flex;}
+.modal{
+    background:rgba(255,255,255,0.7);
+    backdrop-filter:blur(18px) saturate(180%);
+    -webkit-backdrop-filter:blur(18px) saturate(180%);
+    border:1px solid var(--border-color);
+    border-radius:var(--radius);padding:24px;
+    width:100%;max-width:600px;max-height:80vh;overflow-y:auto;
+    box-shadow:0 12px 48px rgba(31,58,74,0.18),inset 0 1px 0 rgba(255,255,255,0.6);
+}
+.modal h3{font-size:18px;margin-bottom:16px;font-weight:700;color:var(--text-primary);}
+.modal-actions{display:flex;gap:12px;justify-content:flex-end;margin-top:16px;}
+.save-status{color:var(--text-secondary);font-size:13px;align-self:center;}
+.warning-card{border-left:4px solid var(--warning);}
+.warning-card ul{padding-left:20px;line-height:2;font-size:13px;color:var(--text-secondary);}
+
+/* ============ 移动端适配 ============ */
+@media (max-width: 768px) {
+    .main{margin-left:0;padding:72px 14px 20px 14px;}
+    .page-title{font-size:18px;text-align:center;}
+    .page-hint{font-size:12px;text-align:center;margin-bottom:18px;}
+    .card{padding:14px;margin-bottom:14px;border-radius:10px;}
+    .card-title{font-size:15px;margin-bottom:10px;}
+    .editor{min-height:350px;padding:10px;font-size:12px;}
+    .btn{padding:10px 14px;font-size:13px;}
+    .btn-sm{padding:6px 10px;font-size:11px;}
+    .actions{flex-wrap:wrap;gap:8px;}
+    .modal{padding:16px;margin:10px;max-height:85vh;}
+    .modal-actions{flex-direction:column-reverse;margin-top:12px;}
+    .modal-actions .btn{width:100%;}
+    .item{padding:8px 12px;flex-wrap:wrap;gap:8px;}
+    .item-name{font-size:12px;}
+}
+</style>
+</head>
+<body>
+<div id="sidebar"></div>
+<div class="main">
+    <div class="page-header">
+        <div>
+            <h1 class="page-title">配置编辑</h1>
+            <p class="page-hint">直接修改 bot.yaml。保存时自动生成备份，可从"备份历史"恢复。</p>
+        </div>
+        <div id="theme-container"></div>
+    </div>
+
+    <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
+            <span>bot.yaml</span>
+            <div>
+                <span id="save-status" class="save-status"></span>
+                <button class="btn btn-sec btn-sm" onclick="loadConfig()">刷新</button>
+                <button class="btn btn-sec btn-sm" onclick="showBackupModal()">备份历史</button>
+                <button class="btn btn-sm" onclick="saveConfig()">保存配置</button>
+            </div>
+        </div>
+        <textarea id="yaml-editor" class="editor" spellcheck="false" placeholder="加载中..."></textarea>
+    </div>
+
+    <div class="card warning-card">
+        <div class="card-title">注意事项</div>
+        <ul>
+            <li>保存前会自动创建备份，支持从"备份历史"恢复</li>
+            <li>YAML 格式要求严格，注意缩进结构（2 空格）</li>
+            <li>修改后 Bot 需要重启或让插件重新读取配置才会生效</li>
+        </ul>
+    </div>
+</div>
+
+<div class="modal-overlay" id="backup-modal">
+    <div class="modal">
+        <h3>备份历史</h3>
+        <div id="backup-list" style="margin-bottom:8px;">加载中...</div>
+        <div class="modal-actions">
+            <button class="btn btn-sec" onclick="closeBackupModal()">关闭</button>
+        </div>
+    </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/app.js"></script>
+<script>
+let currentContent = "";
+
+async function loadConfig() {
+    try {
+        const data = await api.config.get();
+        currentContent = data.content;
+        document.getElementById("yaml-editor").value = data.content;
+        document.getElementById("yaml-editor").placeholder = "在此编辑 YAML 配置...";
+        document.getElementById("save-status").innerText = "";
+    } catch (e) {
+        Toast.error("加载失败: " + e.message);
+    }
+}
+
+async function saveConfig() {
+    const content = document.getElementById("yaml-editor").value;
+    if (content === currentContent) {
+        Toast.warning("配置没有变化");
+        return;
+    }
+    try {
+        await api.config.update(content);
+        currentContent = content;
+        document.getElementById("save-status").innerText = "\u2714 已保存";
+        Toast.success("配置已保存");
+        setTimeout(function() {
+            document.getElementById("save-status").innerText = "";
+        }, 3000);
+    } catch (e) {
+        Toast.error("保存失败: " + e.message);
+    }
+}
+
+async function showBackupModal() {
+    try {
+        const data = await api.config.get();
+        const backups = data.backups || [];
+        if (backups.length === 0) {
+            document.getElementById("backup-list").innerHTML = '<p style="color:#a0a0c0;font-size:13px;text-align:center;padding:20px;">暂无备份</p>';
+        } else {
+            document.getElementById("backup-list").innerHTML = backups.map(function(b) {
+                return '<div class="item"><div><div style="color:#fff;font-size:14px;">' + b.timestamp + '</div><div class="item-name">' + b.size + ' bytes</div></div><button class="btn btn-danger btn-sm" onclick="restoreBackup(\'' + b.timestamp + '\')">恢复此版本</button></div>';
+            }).join("");
+        }
+        document.getElementById("backup-modal").classList.add("show");
+    } catch (e) {
+        Toast.error("加载备份失败: " + e.message);
+    }
+}
+
+async function restoreBackup(timestamp) {
+    if (!confirm("确定要恢复到该备份版本吗？当前配置会被自动备份。")) return;
+    try {
+        await api.config.restoreBackup(timestamp);
+        Toast.success("已恢复到备份版本");
+        closeBackupModal();
+        loadConfig();
+    } catch (e) {
+        Toast.error("恢复失败: " + e.message);
+    }
+}
+
+function closeBackupModal() {
+    document.getElementById("backup-modal").classList.remove("show");
+}
+
+// Tab 键支持
+document.getElementById("yaml-editor").addEventListener("keydown", function(e) {
+    if (e.key === "Tab") {
+        e.preventDefault();
+        const start = this.selectionStart;
+        const end = this.selectionEnd;
+        this.value = this.value.substring(0, start) + "  " + this.value.substring(end);
+        this.selectionStart = this.selectionEnd = start + 2;
+    }
+});
+
+if (window.ThemeManager) window.ThemeManager.render("#theme-container");
+renderSidebar("config");
+requireAuth().then(function(ok) { if (ok) loadConfig(); });
+</script>
+</body>
+</html>

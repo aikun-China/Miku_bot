@@ -28,6 +28,7 @@ MikuBot 用户数据存储 + 经济系统
 
 import json
 import random
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -35,8 +36,14 @@ from typing import Optional
 DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "users"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# uid 全局计数器：按顺序为首次签到的用户分配 uid（000000001 起）
+# uid 全局计数器：按顺序为首次访问的用户分配 uid（000000001 起）
 UID_COUNTER_FILE = DATA_DIR / "_uid_counter.json"
+
+# 全局写锁：保护所有用户数据的读写操作，防止并发竞态
+_user_lock = threading.Lock()
+
+# UID 计数器专用锁
+_uid_lock = threading.Lock()
 
 # ---------- 签到奖励配置（集中在这里，方便后续调参） ----------
 COIN_MIN = 1       # 每次签到获得的金币下限
@@ -62,28 +69,30 @@ def _next_uid() -> str:
     计数器文件若不存在则从 1 开始。
     """
     import os
-    if UID_COUNTER_FILE.exists():
-        try:
-            cur = int(json.loads(UID_COUNTER_FILE.read_text(encoding="utf-8")))
-        except Exception:
+    with _uid_lock:
+        if UID_COUNTER_FILE.exists():
+            try:
+                cur = int(json.loads(UID_COUNTER_FILE.read_text(encoding="utf-8")))
+            except Exception:
+                cur = 1
+        else:
             cur = 1
-    else:
-        cur = 1
-    new_val = cur + 1
-    tmp = UID_COUNTER_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(new_val, ensure_ascii=False), encoding="utf-8")
-    if os.name == "nt":
-        # Windows 下 Path.replace 也可用，统一走 replace
-        tmp.replace(UID_COUNTER_FILE)
-    else:
-        tmp.replace(UID_COUNTER_FILE)
-    return f"{cur:09d}"
+        new_val = cur + 1
+        tmp = UID_COUNTER_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(new_val, ensure_ascii=False), encoding="utf-8")
+        if os.name == "nt":
+            # Windows 下 Path.replace 也可用，统一走 replace
+            tmp.replace(UID_COUNTER_FILE)
+        else:
+            tmp.replace(UID_COUNTER_FILE)
+        return f"{cur:09d}"
 
 
 def _load(user_id) -> dict:
     path = _user_path(user_id)
+    is_new_user = not path.exists()
     data = None
-    if path.exists():
+    if not is_new_user:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
@@ -94,7 +103,10 @@ def _load(user_id) -> dict:
 
     # 初始化/补齐字段（兼容老版本数据升级到新字段）
     data.setdefault("user_id", str(user_id))
-    data.setdefault("uid", "")          # 首次签到时自动分配的全局 uid（000000001 起）
+    data.setdefault("nickname", "")     # 用户昵称（每次聊天自动更新）
+    data.setdefault("first_seen", "")   # 首次见面（聊天）时间 "YYYY-MM-DD HH:MM:SS"
+    data.setdefault("last_seen", "")    # 最近一次聊天时间 "YYYY-MM-DD HH:MM:SS"
+    data.setdefault("chat_count", 0)    # 累计聊天次数（和 AI 对话的次数）
     data.setdefault("total_checkin_days", 0)
     data.setdefault("coins", 0)
     data.setdefault("favor", 0.0)
@@ -118,6 +130,16 @@ def _load(user_id) -> dict:
     except Exception:
         data["favor"] = 0.0
 
+    # 新用户：立即分配 UID 并写入磁盘，确保任意插件首次访问即建档
+    if is_new_user:
+        data["uid"] = _next_uid()
+        data["first_seen"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _save(user_id, data)
+    elif not data.get("uid"):
+        # 老用户但 UID 未分配（兼容历史数据）
+        data["uid"] = _next_uid()
+        _save(user_id, data)
+
     return data
 
 
@@ -132,19 +154,65 @@ def _save(user_id, data: dict) -> None:
 # 通用查询
 # ============================================================
 def get_user(user_id) -> dict:
-    return _load(user_id)
+    with _user_lock:
+        return _load(user_id)
 
 
 def get_balance(user_id) -> int:
-    return _load(user_id).get("coins", 0)
+    with _user_lock:
+        return _load(user_id).get("coins", 0)
 
 
 def get_favor(user_id) -> float:
-    return round(float(_load(user_id).get("favor", 0.0)), 2)
+    with _user_lock:
+        return round(float(_load(user_id).get("favor", 0.0)), 2)
 
 
 def get_items(user_id) -> dict:
-    return dict(_load(user_id).get("items", {}))
+    with _user_lock:
+        return dict(_load(user_id).get("items", {}))
+
+
+# ============================================================
+# 用户记忆（聊天相关）
+# ============================================================
+def update_chat_memory(user_id, nickname: str = "") -> dict:
+    """更新用户聊天记忆：昵称、首次见面时间、最后聊天时间、聊天次数。
+    返回更新后的用户数据。
+    """
+    with _user_lock:
+        data = _load(user_id)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # 更新昵称（如果有新昵称就覆盖）
+        if nickname and nickname.strip():
+            data["nickname"] = str(nickname).strip()
+
+        # 首次见面时间（只设置一次）
+        if not data.get("first_seen"):
+            data["first_seen"] = now
+
+        # 最后聊天时间（每次都更新）
+        data["last_seen"] = now
+
+        # 累计聊天次数 +1
+        data["chat_count"] = int(data.get("chat_count", 0)) + 1
+
+        _save(user_id, data)
+        return data
+
+
+def get_user_info(user_id) -> dict:
+    """获取用户完整信息（包括记忆字段）。"""
+    with _user_lock:
+        return _load(user_id)
+
+
+def get_nickname(user_id) -> str:
+    """获取用户昵称，优先从用户记忆中取。"""
+    with _user_lock:
+        data = _load(user_id)
+        return data.get("nickname", "") or str(user_id)
 
 
 # ============================================================
@@ -152,27 +220,65 @@ def get_items(user_id) -> dict:
 # ============================================================
 def add_coins(user_id, amount: int) -> int:
     """增加（正数）或扣除（负数）金币。返回新余额。"""
-    data = _load(user_id)
-    data["coins"] = max(0, int(data.get("coins", 0)) + int(amount))
-    stats = data.setdefault("stats", {})
-    if amount > 0:
-        stats["total_coins_earned"] = int(stats.get("total_coins_earned", 0)) + int(amount)
-    _save(user_id, data)
-    return data["coins"]
+    with _user_lock:
+        data = _load(user_id)
+        data["coins"] = max(0, int(data.get("coins", 0)) + int(amount))
+        stats = data.setdefault("stats", {})
+        if amount > 0:
+            stats["total_coins_earned"] = int(stats.get("total_coins_earned", 0)) + int(amount)
+        _save(user_id, data)
+        return data["coins"]
+
+
+def set_coins(user_id, amount: int) -> int:
+    """直接设置金币数量。返回新余额。"""
+    with _user_lock:
+        data = _load(user_id)
+        data["coins"] = max(0, int(amount))
+        _save(user_id, data)
+        return data["coins"]
 
 
 def add_favor(user_id, amount: float) -> float:
-    data = _load(user_id)
-    cur = float(data.get("favor", 0.0)) + float(amount)
-    cur = max(0.0, min(FAVOR_CAP, cur))
-    data["favor"] = round(cur, 2)
-    stats = data.setdefault("stats", {})
-    if amount > 0:
-        stats["total_favor_earned"] = round(
-            float(stats.get("total_favor_earned", 0.0)) + float(amount), 2
-        )
-    _save(user_id, data)
-    return data["favor"]
+    with _user_lock:
+        data = _load(user_id)
+        cur = float(data.get("favor", 0.0)) + float(amount)
+        cur = max(0.0, min(FAVOR_CAP, cur))
+        data["favor"] = round(cur, 2)
+        stats = data.setdefault("stats", {})
+        if amount > 0:
+            stats["total_favor_earned"] = round(
+                float(stats.get("total_favor_earned", 0.0)) + float(amount), 2
+            )
+        _save(user_id, data)
+        return data["favor"]
+
+
+def set_favor(user_id, amount: float) -> float:
+    """直接设置好感度。返回新好感度。"""
+    with _user_lock:
+        data = _load(user_id)
+        cur = max(0.0, min(FAVOR_CAP, float(amount)))
+        data["favor"] = round(cur, 2)
+        _save(user_id, data)
+        return data["favor"]
+
+
+def reset_user(user_id) -> None:
+    """重置用户所有数据（金币、好感、签到、道具、buff、统计）。"""
+    with _user_lock:
+        data = _load(user_id)
+        data["coins"] = 0
+        data["favor"] = 0.0
+        data["total_checkin_days"] = 0
+        data["items"] = {}
+        data["active_buffs"] = {}
+        data["stats"] = {
+            "total_coins_earned": 0,
+            "total_favor_earned": 0.0,
+            "double_favor_triggered": 0,
+        }
+        _save(user_id, data)
 
 
 # ============================================================
@@ -180,13 +286,14 @@ def add_favor(user_id, amount: float) -> float:
 # ============================================================
 def add_item(user_id, item_key: str, count: int = 1) -> dict:
     """增加指定数量的道具，返回更新后的 items 字典。"""
-    data = _load(user_id)
-    items = data.setdefault("items", {})
-    items[item_key] = int(items.get(item_key, 0)) + int(count)
-    if items[item_key] < 0:
-        items[item_key] = 0
-    _save(user_id, data)
-    return dict(items)
+    with _user_lock:
+        data = _load(user_id)
+        items = data.setdefault("items", {})
+        items[item_key] = int(items.get(item_key, 0)) + int(count)
+        if items[item_key] < 0:
+            items[item_key] = 0
+        _save(user_id, data)
+        return dict(items)
 
 
 def use_item(user_id, item_key: str, count: int = 1) -> bool:
@@ -194,31 +301,34 @@ def use_item(user_id, item_key: str, count: int = 1) -> bool:
     消耗指定数量的道具。
     成功返回 True；数量不足时返回 False，不做修改。
     """
-    data = _load(user_id)
-    items = data.setdefault("items", {})
-    cur = int(items.get(item_key, 0))
-    if cur < int(count):
-        return False
-    items[item_key] = cur - int(count)
-    if items[item_key] <= 0:
-        del items[item_key]
-    _save(user_id, data)
-    return True
+    with _user_lock:
+        data = _load(user_id)
+        items = data.setdefault("items", {})
+        cur = int(items.get(item_key, 0))
+        if cur < int(count):
+            return False
+        items[item_key] = cur - int(count)
+        if items[item_key] <= 0:
+            del items[item_key]
+        _save(user_id, data)
+        return True
 
 
 def set_buff(user_id, buff_key: str, value=True) -> None:
-    data = _load(user_id)
-    buffs = data.setdefault("active_buffs", {})
-    if value:
-        buffs[buff_key] = True
-    else:
-        buffs.pop(buff_key, None)
-    _save(user_id, data)
+    with _user_lock:
+        data = _load(user_id)
+        buffs = data.setdefault("active_buffs", {})
+        if value:
+            buffs[buff_key] = True
+        else:
+            buffs.pop(buff_key, None)
+        _save(user_id, data)
 
 
 def has_buff(user_id, buff_key: str) -> bool:
-    data = _load(user_id)
-    return bool(data.get("active_buffs", {}).get(buff_key, False))
+    with _user_lock:
+        data = _load(user_id)
+        return bool(data.get("active_buffs", {}).get(buff_key, False))
 
 
 def consume_buff(user_id, buff_key: str) -> bool:
@@ -226,13 +336,14 @@ def consume_buff(user_id, buff_key: str) -> bool:
     若该 buff 激活，则消耗掉它并返回 True；否则返回 False。
     典型用法：签到时判断是否有 next_double_favor，有则消耗并触发双倍。
     """
-    data = _load(user_id)
-    buffs = data.setdefault("active_buffs", {})
-    if buffs.get(buff_key):
-        buffs.pop(buff_key, None)
-        _save(user_id, data)
-        return True
-    return False
+    with _user_lock:
+        data = _load(user_id)
+        buffs = data.setdefault("active_buffs", {})
+        if buffs.get(buff_key):
+            buffs.pop(buff_key, None)
+            _save(user_id, data)
+            return True
+        return False
 
 
 # ============================================================
@@ -286,89 +397,80 @@ def do_checkin(
     if d_prob > 1.0:
         d_prob = 1.0
 
-    data = _load(user_id)
-    today = datetime.now().strftime("%Y-%m-%d")
-    now = datetime.now().strftime("%H:%M:%S")
+    with _user_lock:
+        data = _load(user_id)
+        today = datetime.now().strftime("%Y-%m-%d")
+        now = datetime.now().strftime("%H:%M:%S")
 
-    is_first_today = data.get("last_checkin_date") != today
+        is_first_today = data.get("last_checkin_date") != today
 
-    coins_added = 0
-    favor_added = 0.0
-    favor_base = 0.0
-    double_favor = False
-    double_reason = ""
+        coins_added = 0
+        favor_added = 0.0
+        favor_base = 0.0
+        double_favor = False
+        double_reason = ""
 
-    # —— 分配全局 uid：只要尚未分配就分配（兼容老用户数据升级）——
-    need_uid_save = False
-    if not data.get("uid"):
-        data["uid"] = _next_uid()
-        need_uid_save = True
+        if is_first_today:
+            # —— 金币：随机整数（范围来自 YAML 配置或默认值）——
+            coins_added = random.randint(c_min, c_max)
 
-    if is_first_today:
-        # —— 金币：随机整数（范围来自 YAML 配置或默认值）——
-        coins_added = random.randint(c_min, c_max)
+            # —— 好感：随机浮点数（范围来自 YAML 配置或默认值）——
+            favor_base = round(random.uniform(f_min, f_max), 2)
+            favor_added = favor_base
 
-        # —— 好感：随机浮点数（范围来自 YAML 配置或默认值）——
-        favor_base = round(random.uniform(f_min, f_max), 2)
-        favor_added = favor_base
+            # —— 双倍好感判定：优先消耗卡片激活的 buff，其次 概率随机 ——
+            buffs = data.setdefault("active_buffs", {})
+            if buffs.get(BUFF_NEXT_DOUBLE_FAVOR, False):
+                # 由商店道具激活的 100% 必双倍
+                buffs.pop(BUFF_NEXT_DOUBLE_FAVOR, None)
+                double_favor = True
+                double_reason = "card"
+                favor_added = round(favor_base * 2, 2)
+            elif random.random() < d_prob:
+                # 欧皇概率触发（默认 3%）
+                double_favor = True
+                double_reason = "lucky"
+                favor_added = round(favor_base * 2, 2)
 
-        # —— 双倍好感判定：优先消耗卡片激活的 buff，其次 概率随机 ——
-        buffs = data.setdefault("active_buffs", {})
-        if buffs.get(BUFF_NEXT_DOUBLE_FAVOR, False):
-            # 由商店道具激活的 100% 必双倍
-            buffs.pop(BUFF_NEXT_DOUBLE_FAVOR, None)
-            double_favor = True
-            double_reason = "card"
-            favor_added = round(favor_base * 2, 2)
-        elif random.random() < d_prob:
-            # 欧皇概率触发（默认 3%）
-            double_favor = True
-            double_reason = "lucky"
-            favor_added = round(favor_base * 2, 2)
+            # 写入数据
+            data["total_checkin_days"] = int(data.get("total_checkin_days", 0)) + 1
+            data["coins"] = int(data.get("coins", 0)) + coins_added
+            cur_favor = float(data.get("favor", 0.0)) + favor_added
+            data["favor"] = round(min(FAVOR_CAP, cur_favor), 2)
+            data["last_first_time"] = now
+            data["last_checkin_date"] = today
+            data.setdefault("history", []).append(today)
 
-        # 写入数据
-        data["total_checkin_days"] = int(data.get("total_checkin_days", 0)) + 1
-        data["coins"] = int(data.get("coins", 0)) + coins_added
-        cur_favor = float(data.get("favor", 0.0)) + favor_added
-        data["favor"] = round(min(FAVOR_CAP, cur_favor), 2)
-        data["last_first_time"] = now
-        data["last_checkin_date"] = today
-        data.setdefault("history", []).append(today)
+            # 统计
+            stats = data.setdefault("stats", {})
+            stats["total_coins_earned"] = int(stats.get("total_coins_earned", 0)) + coins_added
+            stats["total_favor_earned"] = round(
+                float(stats.get("total_favor_earned", 0.0)) + favor_added, 2
+            )
+            if double_favor:
+                stats["double_favor_triggered"] = int(stats.get("double_favor_triggered", 0)) + 1
 
-        # 统计
-        stats = data.setdefault("stats", {})
-        stats["total_coins_earned"] = int(stats.get("total_coins_earned", 0)) + coins_added
-        stats["total_favor_earned"] = round(
-            float(stats.get("total_favor_earned", 0.0)) + favor_added, 2
-        )
-        if double_favor:
-            stats["double_favor_triggered"] = int(stats.get("double_favor_triggered", 0)) + 1
+            _save(user_id, data)
 
-        _save(user_id, data)
-
-    # 如果 uid 是本次刚分配但今天已经签过到，也要保存 uid
-    elif need_uid_save:
-        _save(user_id, data)
-
-    # —— 返回结果（无论是否首次）——
-    items = data.get("items", {})
-    buffs = data.get("active_buffs", {})
-    return {
-        "is_first_today": is_first_today,
-        "today_first_time": data.get("last_first_time", now),
-        "total_days": data.get("total_checkin_days", 0),
-        "coins": data.get("coins", 0),
-        "favor": round(float(data.get("favor", 0.0)), 2),
-        "coins_added": coins_added,
-        "favor_added": favor_added,
-        "favor_base": favor_base,
-        "double_favor": double_favor,
-        "double_reason": double_reason,
-        "date": today,
-        "next_double_favor_buff": bool(buffs.get(BUFF_NEXT_DOUBLE_FAVOR, False)),
-        "double_favor_card_count": int(items.get(ITEM_DOUBLE_FAVOR, 0)),
-        "uid": data.get("uid", ""),
-    }
+        # —— 返回结果（无论是否首次）——
+        items = data.get("items", {})
+        buffs = data.get("active_buffs", {})
+        return {
+            "is_first_today": is_first_today,
+            "today_first_time": data.get("last_first_time", now),
+            "total_days": data.get("total_checkin_days", 0),
+            "coins": data.get("coins", 0),
+            "favor": round(float(data.get("favor", 0.0)), 2),
+            "coins_added": coins_added,
+            "favor_added": favor_added,
+            "favor_base": favor_base,
+            "double_favor": double_favor,
+            "double_reason": double_reason,
+            "date": today,
+            "next_double_favor_buff": bool(buffs.get(BUFF_NEXT_DOUBLE_FAVOR, False)),
+            "double_favor_card_count": int(items.get(ITEM_DOUBLE_FAVOR, 0)),
+            "uid": data.get("uid", ""),
+        }
 
 
 # ============================================================
@@ -381,16 +483,17 @@ def use_double_favor_card(user_id) -> bool:
     - 没有卡：返回 False
     - 已有同样 buff（已激活未用）：返回 False，避免重复覆盖
     """
-    data = _load(user_id)
-    buffs = data.setdefault("active_buffs", {})
-    if buffs.get(BUFF_NEXT_DOUBLE_FAVOR, False):
-        return False   # 已有同样 buff，别叠加浪费
-    items = data.setdefault("items", {})
-    if int(items.get(ITEM_DOUBLE_FAVOR, 0)) <= 0:
-        return False
-    items[ITEM_DOUBLE_FAVOR] = int(items[ITEM_DOUBLE_FAVOR]) - 1
-    if items[ITEM_DOUBLE_FAVOR] <= 0:
-        del items[ITEM_DOUBLE_FAVOR]
-    buffs[BUFF_NEXT_DOUBLE_FAVOR] = True
-    _save(user_id, data)
-    return True
+    with _user_lock:
+        data = _load(user_id)
+        buffs = data.setdefault("active_buffs", {})
+        if buffs.get(BUFF_NEXT_DOUBLE_FAVOR, False):
+            return False   # 已有同样 buff，别叠加浪费
+        items = data.setdefault("items", {})
+        if int(items.get(ITEM_DOUBLE_FAVOR, 0)) <= 0:
+            return False
+        items[ITEM_DOUBLE_FAVOR] = int(items[ITEM_DOUBLE_FAVOR]) - 1
+        if items[ITEM_DOUBLE_FAVOR] <= 0:
+            del items[ITEM_DOUBLE_FAVOR]
+        buffs[BUFF_NEXT_DOUBLE_FAVOR] = True
+        _save(user_id, data)
+        return True

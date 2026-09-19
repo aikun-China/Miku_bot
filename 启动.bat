@@ -1,25 +1,26 @@
 @echo off
-chcp 936 >nul
+chcp 65001 >nul
 cd /d "%~dp0"
+title MikuBot
 
 echo =========================================
-echo MikuBot Starting
+echo   MikuBot Starting...
 echo =========================================
 
 REM 1. Check virtual environment
 if not exist ".venv\Scripts\python.exe" (
-    echo [ERROR] Virtual environment not found!
-    echo [INFO] Please create it first:
-    echo     python -m venv .venv
+    echo [ERROR] Virtual environment not found
+    echo Please run: python -m venv .venv
     pause
     exit /b 1
 )
-echo [OK] Virtual environment exists
+echo [OK] Virtual environment found
 
-REM 2. Check dependencies (bot.py will handle browser installation)
+REM 2. Check dependencies
+echo.
 ".venv\Scripts\python.exe" -c "import nonebot" >nul 2>nul
 if errorlevel 1 (
-    echo [INFO] Dependencies missing, installing...
+    echo [INFO] Dependencies not found, installing...
     ".venv\Scripts\python.exe" -m pip install -r requirements.txt
     if errorlevel 1 (
         echo [ERROR] Dependency installation failed
@@ -28,23 +29,26 @@ if errorlevel 1 (
     )
     echo [OK] Dependencies installed
 ) else (
-    echo [OK] Dependencies already installed
+    echo [OK] Dependencies ready
 )
 
-REM 3. Start Bot (check_deps.py in bot.py will auto-install browser if needed)
+REM 3. Start Bot
 echo.
-echo [INFO] Starting MikuBot...
-echo [INFO] If browser is not installed, it will be downloaded automatically
 echo =========================================
+echo   Starting MikuBot...
+echo =========================================
+echo.
+
 ".venv\Scripts\python.exe" bot.py
 
 if errorlevel 1 (
     echo.
     echo =========================================
-    echo [ERROR] Bot startup failed! Error code: %errorlevel%
+    echo   [ERROR] Bot exited with code: %errorlevel%
     echo =========================================
 ) else (
     echo.
     echo [INFO] Bot exited normally
 )
+echo.
 pause

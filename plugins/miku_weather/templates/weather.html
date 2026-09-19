@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    width: 720px;
+    font-family: "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    background: #f0faff url("{bg_data_uri}") center top / cover no-repeat;
+    min-height: 900px;
+    position: relative;
+}
+body::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(180deg, rgba(0, 229, 232, 0.18) 0%, rgba(0, 184, 186, 0.4) 70%, rgba(0, 184, 186, 0.6) 100%);
+    z-index: 0;
+}
+
+/* 内容容器 */
+.content {
+    position: relative;
+    z-index: 2;
+    padding: 40px 40px 50px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+/* 标题区 */
+.title-box {
+    text-align: center;
+    color: #ffffff;
+    text-shadow: 0 2px 8px rgba(0, 122, 124, 0.6);
+    margin-top: 40px;
+}
+.title-main {
+    font-size: 34px;
+    font-weight: bold;
+    letter-spacing: 6px;
+}
+.title-sub {
+    font-size: 14px;
+    margin-top: 6px;
+    letter-spacing: 3px;
+    opacity: 0.9;
+}
+
+/* 主卡片（毛玻璃） */
+.card {
+    background: rgba(255, 255, 255, 0.65);
+    backdrop-filter: blur(18px) saturate(150%);
+    -webkit-backdrop-filter: blur(18px) saturate(150%);
+    border-radius: 24px;
+    border: 1.5px solid rgba(255, 255, 255, 0.75);
+    box-shadow: 0 12px 40px rgba(0, 122, 124, 0.35);
+    width: 560px;
+    margin-top: 300px;
+    padding: 30px 30px 22px;
+}
+
+/* 城市行 */
+.city-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: 18px;
+    border-bottom: 2px dashed #d0efff;
+}
+.city-name {
+    font-size: 32px;
+    font-weight: bold;
+    color: #007A7C;
+    letter-spacing: 2px;
+}
+.city-icon {
+    font-size: 56px;
+    line-height: 1;
+    filter: drop-shadow(0 4px 8px rgba(0, 184, 186, 0.3));
+}
+
+/* 温度大字区 */
+.temp-area {
+    text-align: center;
+    padding: 22px 0 16px;
+}
+.main-temp {
+    font-size: 72px;
+    font-weight: bold;
+    color: #007A7C;
+    letter-spacing: 2px;
+    line-height: 1;
+}
+.main-temp .unit {
+    font-size: 28px;
+    font-weight: 500;
+    color: #00B8BA;
+    margin-left: 4px;
+}
+.main-weather {
+    margin-top: 10px;
+    font-size: 18px;
+    color: #00B8BA;
+    letter-spacing: 2px;
+}
+
+/* 细节指标（四栏） */
+.details {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 20px;
+}
+.detail-item {
+    flex: 1;
+    text-align: center;
+    padding: 14px 8px;
+    background: linear-gradient(135deg, rgba(224, 255, 255, 0.45) 0%, rgba(255, 247, 240, 0.45) 100%);
+    border-radius: 14px;
+}
+.detail-value {
+    font-size: 20px;
+    font-weight: bold;
+    color: #007A7C;
+}
+.detail-label {
+    font-size: 12px;
+    color: #00B8BA;
+    margin-top: 4px;
+    letter-spacing: 1px;
+}
+
+/* AQI 徽章（底部行） */
+.aqi-row {
+    margin-top: 22px;
+    text-align: center;
+}
+.aqi-badge {
+    display: inline-block;
+    padding: 8px 20px;
+    border-radius: 14px;
+    font-size: 14px;
+    font-weight: bold;
+    color: white;
+    background: ${aqi_color};
+    letter-spacing: 2px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+.aqi-badge .num {
+    font-size: 18px;
+    margin-right: 4px;
+}
+
+/* 底部小文字 */
+.footer {
+    margin-top: 18px;
+    text-align: center;
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 12px;
+    text-shadow: 0 1px 4px rgba(0, 122, 124, 0.5);
+    letter-spacing: 2px;
+}
+</style>
+</head>
+<body>
+<div class="content">
+    <div class="title-box">
+        <div class="title-main">🌤 MI KU 天 气</div>
+        <div class="title-sub">你的每日天气播报</div>
+    </div>
+
+    <div class="card">
+        <div class="city-row">
+            <div class="city-name">{city}</div>
+            <div class="city-icon">{icon}</div>
+        </div>
+        <div class="temp-area">
+            <div class="main-temp">{temp}<span class="unit">°C</span></div>
+            <div class="main-weather">{weather}</div>
+        </div>
+        <div class="details">
+            <div class="detail-item">
+                <div class="detail-value">{temp_high}°</div>
+                <div class="detail-label">最高温</div>
+            </div>
+            <div class="detail-item">
+                <div class="detail-value">{temp_low}°</div>
+                <div class="detail-label">最低温</div>
+            </div>
+            <div class="detail-item">
+                <div class="detail-value">{humidity}%</div>
+                <div class="detail-label">湿度</div>
+            </div>
+            <div class="detail-item">
+                <div class="detail-value">{wind}</div>
+                <div class="detail-label">风力</div>
+            </div>
+        </div>
+        <div class="aqi-row">
+            <span class="aqi-badge"><span class="num">AQI {aqi}</span>{aqi_text}</span>
+        </div>
+    </div>
+
+    <div class="footer">MikuBot 天气服务</div>
+</div>
+</body>
+</html>

@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>仪表盘 - MikuBot 管理后台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/style.css">
+<script src="/js/theme.js"></script>
+<style>
+body{font-family:"Noto Sans SC",sans-serif;background:linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 50%, var(--theme-glow) 100%);color:var(--text-primary);}
+.main{min-height:100vh;padding:28px 32px;margin-left:260px;}
+.page-title{font-size:22px;font-weight:700;margin-bottom:20px;color:var(--text-primary);}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px;}
+.card{
+    background:rgba(255,255,255,0.7);
+    backdrop-filter:blur(18px) saturate(180%);
+    -webkit-backdrop-filter:blur(18px) saturate(180%);
+    border:1px solid var(--border-color);
+    border-radius:var(--radius);
+    padding:20px;
+    position:relative;
+    overflow:hidden;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.6),0 6px 18px rgba(31,58,74,0.08);
+}
+.card::before{content:"";position:absolute;top:0;left:0;right:0;height:3px;background:var(--gradient);}
+.card-label{font-size:13px;color:var(--text-secondary);margin-bottom:6px;}
+.card-value{font-size:30px;font-weight:700;color:var(--text-primary);}
+.card-icon{font-size:28px;opacity:.85;margin-bottom:8px;}
+.stat-1 .card-icon{color:var(--theme-primary);}
+.stat-2 .card-icon{color:var(--theme-secondary);}
+.stat-3 .card-icon{color:var(--warning);}
+.stat-4 .card-icon{color:var(--success);}
+.section{margin-bottom:24px;}
+.section-title{font-size:16px;font-weight:600;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border-color);color:var(--text-primary);}
+.info-row{display:flex;padding:10px 14px;background:var(--bg-hover);border-radius:var(--radius-sm);margin-bottom:8px;font-size:14px;}
+.info-label{color:var(--text-secondary);width:140px;}
+.info-value{flex:1;color:var(--text-primary);font-family:"JetBrains Mono",Consolas,monospace;}
+
+/* 按钮（主按钮 + 次级按钮 + 危险按钮） */
+.btn{padding:10px 18px;background:linear-gradient(135deg,#2BA89E,#3A6E8E);border:none;border-radius:var(--radius-sm);color:#fff;font-size:14px;font-weight:600;cursor:pointer;transition:0.2s;}
+.btn:hover{transform:translateY(-1px);box-shadow:0 8px 20px var(--theme-glow);}
+.btn-sec{background:rgba(255,255,255,0.7);border:1px solid var(--border-color);color:var(--text-secondary);backdrop-filter:blur(10px) saturate(180%);-webkit-backdrop-filter:blur(10px) saturate(180%);box-shadow:inset 0 1px 0 rgba(255,255,255,0.6);}
+.btn-danger{background:linear-gradient(135deg,#D64545,#B53535);color:#fff;}
+
+/* 设备授权面板 */
+.device-section{margin-bottom:28px;}
+.device-section .section-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:8px;flex-wrap:wrap;}
+.device-section .section-title{margin:0;padding:0;border:none;font-size:16px;font-weight:600;}
+.badge-count{background:var(--bg-hover);padding:3px 10px;border-radius:12px;font-size:12px;color:var(--warning);font-weight:500;}
+.badge-count.ok{color:var(--success);}
+.badge-count.bad{color:var(--danger);}
+
+.device-card{
+    background:rgba(255,255,255,0.7);
+    backdrop-filter:blur(18px) saturate(180%);
+    -webkit-backdrop-filter:blur(18px) saturate(180%);
+    border:1px solid var(--border-color);
+    border-radius:var(--radius-sm);
+    padding:16px;margin-bottom:12px;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.6),0 6px 18px rgba(31,58,74,0.08);
+}
+.device-card.pending{border-color:var(--warning);}
+.device-card .row{display:flex;justify-content:space-between;padding:6px 0;font-size:13px;}
+.device-card .row .label{color:var(--text-secondary);}
+.device-card .row .value{color:var(--text-primary);font-family:"JetBrains Mono",monospace;word-break:break-all;}
+.device-card .header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--border-color);flex-wrap:wrap;gap:8px;}
+.device-card .name{font-size:14px;font-weight:600;color:var(--text-primary);}
+.device-card .flag{font-size:11px;padding:3px 8px;border-radius:10px;}
+.flag-pending{background:rgba(232,132,47,.18);color:var(--warning);}
+.flag-approved{background:rgba(43,168,106,.15);color:var(--success);}
+.flag-rejected{background:rgba(214,69,69,.18);color:var(--danger);}
+.flag-local{background:var(--theme-glow);color:var(--theme-primary);margin-left:6px;}
+
+.device-actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;justify-content:flex-end;}
+.device-actions .btn{padding:8px 14px;font-size:13px;}
+.device-actions .btn-sm{padding:6px 12px;font-size:12px;}
+
+.empty-panel{background:var(--bg-hover);border:1px dashed var(--border-color);border-radius:var(--radius-sm);padding:24px;text-align:center;color:var(--text-secondary);font-size:13px;}
+.device-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px;}
+
+/* 页面标题栏 */
+.page-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:12px;}
+
+/* ============================================================
+   移动端适配（竖屏/小屏幕）
+   ============================================================ */
+@media (max-width: 768px) {
+    /* 侧边栏由 app.js 控制（抽屉式） */
+    #sidebar{width:0;}
+    .main{margin-left:0;padding:72px 14px 20px 14px;}
+    .page-title{font-size:18px;margin-bottom:16px;text-align:center;}
+    /* 统计卡片单列 + 紧凑布局 */
+    .grid{grid-template-columns:1fr 1fr;gap:10px;margin-bottom:18px;}
+    .grid .card{padding:12px 14px;border-radius:10px;}
+    .card-icon{font-size:20px;margin-bottom:4px;}
+    .card-value{font-size:22px;}
+    .card-label{font-size:11px;margin-bottom:4px;}
+    /* 信息行单列 */
+    .info-row{flex-direction:column;gap:4px;padding:10px 12px;font-size:13px;}
+    .info-label{width:auto;font-size:12px;}
+    /* 按钮更紧凑 */
+    .btn{padding:10px 14px;font-size:13px;}
+    .btn-sec, .btn-danger{padding:10px 14px;font-size:13px;}
+    .section-title{font-size:15px;}
+    /* 快捷操作：按钮自动换行 */
+    .main > .section > div[style*="display:flex"],
+    .section > div[style*="display:flex"]{
+        flex-wrap:wrap !important;
+        gap:8px !important;
+    }
+    /* 设备卡片移动端 */
+    .device-grid{grid-template-columns:1fr;gap:10px;}
+    .device-card{padding:12px;}
+    .device-card .row{font-size:12px;}
+    .device-card .name{font-size:13px;}
+    .device-actions{justify-content:stretch;}
+    .device-actions .btn{flex:1;padding:8px 10px;font-size:12px;}
+    /* 徽章响应式 */
+    .section-header{flex-wrap:wrap;}
+    .badge-count{font-size:11px;padding:2px 8px;}
+}
+@media (max-width: 480px) {
+    .grid{grid-template-columns:1fr;}
+}
+</style>
+</head>
+<body>
+<div id="sidebar"></div>
+<div class="main">
+    <div class="page-header">
+        <h1 class="page-title" style="margin-bottom:0;">仪表盘</h1>
+        <div id="theme-container"></div>
+    </div>
+
+    <div id="stats-grid" class="grid">
+        <div class="loading">加载中...</div>
+    </div>
+
+    <!-- 新增：消息与插件统计 -->
+    <div id="stats-grid-2" class="grid" style="display:none;">
+        <div class="loading">加载中...</div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">运行状态</div>
+        <div id="status-info" class="card">
+            <div class="info-row"><div class="info-label">状态</div><div class="info-value" id="v-status">--</div></div>
+            <div class="info-row"><div class="info-label">运行时长</div><div class="info-value" id="v-uptime">--</div></div>
+            <div class="info-row"><div class="info-label">内存占用</div><div class="info-value" id="v-mem">--</div></div>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">配置文件信息</div>
+        <div id="config-info" class="card">
+            <div class="info-row"><div class="info-label">配置文件</div><div class="info-value" id="v-configfile">--</div></div>
+            <div class="info-row"><div class="info-label">最后修改</div><div class="info-value" id="v-modified">--</div></div>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">快捷操作</div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;">
+            <button class="btn" onclick="location.href='/plugins'">插件管理</button>
+            <button class="btn btn-sec" onclick="location.href='/blacklist'">黑白名单</button>
+            <button class="btn btn-sec" onclick="location.href='/config'">配置编辑</button>
+            <button class="btn btn-sec" onclick="loadData()">刷新数据</button>
+            <button class="btn btn-danger" onclick="restartBot()">重启 Bot</button>
+        </div>
+    </div>
+
+    <div class="device-section">
+        <div class="section-header">
+            <div class="section-title">设备授权</div>
+            <div style="display:flex;gap:8px;align-items:center;">
+                <span class="badge-count" id="pending-count">待批准 0</span>
+                <span class="badge-count ok" id="approved-count">已批准 0</span>
+                <span class="badge-count bad" id="rejected-count">已拒绝 0</span>
+                <button class="btn btn-sec" style="padding:6px 12px;font-size:12px;" onclick="loadDevices()">刷新</button>
+            </div>
+        </div>
+
+        <div id="device-pending-area"></div>
+        <div id="device-approved-area"></div>
+        <div id="device-rejected-area"></div>
+    </div>
+
+    <!-- 群发言排名 -->
+    <div class="section">
+        <div class="section-title">群发言排名</div>
+        <div class="card" id="group-ranking-card">
+            <div class="empty-panel" style="margin:0;">加载中...</div>
+        </div>
+    </div>
+
+    <!-- 消息趋势图 -->
+    <div class="section">
+        <div class="section-title">消息趋势（最近30天）</div>
+        <div class="card">
+            <canvas id="msg-trend-chart" height="100"></canvas>
+        </div>
+    </div>
+
+    <!-- 插件调用趋势图 -->
+    <div class="section">
+        <div class="section-title">插件调用趋势（最近30天）</div>
+        <div class="card">
+            <canvas id="plugin-trend-chart" height="100"></canvas>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="/js/api.js"></script>
+<script src="/js/app.js"></script>
+<script>
+async function loadData() {
+    try {
+        var data = await window.api.dashboard.get();
+
+        // 基础统计卡片
+        document.getElementById("stats-grid").innerHTML =
+            statCard("\u2699", "已启用插件", data.enabled_plugin_count + " / " + data.plugin_count, "stat-1") +
+            statCard("\u2718", "全局禁用", data.global_blacklist_count, "stat-2") +
+            statCard("\u2630", "群组黑名单", data.group_blacklist_count, "stat-3") +
+            statCard("\u2665", "用户黑名单", data.user_blacklist_count, "stat-4");
+
+        // 消息与插件统计卡片（新增）
+        var statsGrid2 = document.getElementById("stats-grid-2");
+        statsGrid2.innerHTML =
+            statCard("\uD83D\uDCEE", "总消息数", data.total_messages || 0, "stat-1") +
+            statCard("\uD83D\uDC65", "活跃用户", data.total_users || 0, "stat-2") +
+            statCard("\uD83D\uDCC5", "今日消息", data.today_messages || 0, "stat-3") +
+            statCard("\uD83D\uDD50", "本周消息", data.week_messages || 0, "stat-4") +
+            statCard("\uD83D\uDCBB", "插件调用", data.total_plugin_calls || 0, "stat-1") +
+            statCard("\uD83D\uDCBC", "活跃插件", data.active_plugins || 0, "stat-2");
+        statsGrid2.style.display = "grid";
+
+        document.getElementById("v-status").innerHTML = '<span style="color:#50fa7b;font-weight:600;">\u25CF 在线</span>';
+        document.getElementById("v-uptime").innerText = data.uptime;
+        document.getElementById("v-mem").innerText = data.memory_usage;
+        document.getElementById("v-configfile").innerText = data.config_file;
+        document.getElementById("v-modified").innerText = data.last_modified;
+
+        // 群发言排名
+        renderGroupRanking(data.group_ranking || []);
+
+        // 消息趋势图
+        renderMsgTrendChart(data.msg_trend || []);
+
+        // 插件调用趋势图
+        renderPluginTrendChart(data.plugin_trend || []);
+    } catch (e) {
+        window.Toast.error("加载失败: " + e.message);
+    }
+}
+
+function renderGroupRanking(ranking) {
+    var card = document.getElementById("group-ranking-card");
+    if (!ranking || ranking.length === 0) {
+        card.innerHTML = '<div class="empty-panel" style="margin:0;">暂无群消息数据</div>';
+        return;
+    }
+
+    var maxCount = ranking[0].message_count || 1;
+    var html = '<div style="display:flex;flex-direction:column;gap:10px;">';
+
+    for (var i = 0; i < Math.min(ranking.length, 10); i++) {
+        var g = ranking[i];
+        var percent = Math.round((g.message_count / maxCount) * 100);
+        var rankClass = i < 3 ? 'rank-top' : '';
+        var medal = ['🥇', '🥈', '🥉'][i] || (i + 1);
+
+        html += '<div style="display:flex;align-items:center;gap:12px;">' +
+            '<div style="width:28px;text-align:center;font-size:14px;font-weight:600;color:var(--text-secondary);">' + medal + '</div>' +
+            '<div style="flex:1;min-width:0;">' +
+                '<div style="display:flex;justify-content:space-between;margin-bottom:4px;">' +
+                    '<span style="font-size:13px;font-weight:500;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60%;">群 ' + g.group_id + '</span>' +
+                    '<span style="font-size:12px;color:var(--text-secondary);font-family:JetBrains Mono,monospace;">' + g.message_count + ' 条</span>' +
+                '</div>' +
+                '<div style="height:8px;background:var(--bg-hover);border-radius:4px;overflow:hidden;">' +
+                    '<div style="height:100%;width:' + percent + '%;background:linear-gradient(90deg,#2BA89E,#3A6E8E);border-radius:4px;transition:width 0.5s;"></div>' +
+                '</div>' +
+            '</div>' +
+        '</div>';
+    }
+
+    html += '</div>';
+    card.innerHTML = html;
+}
+
+var msgChart = null;
+var pluginChart = null;
+
+function renderMsgTrendChart(trend) {
+    var ctx = document.getElementById('msg-trend-chart').getContext('2d');
+    if (msgChart) msgChart.destroy();
+
+    var labels = trend.map(function(t) { return t.date.slice(5); });
+    var data = trend.map(function(t) { return t.count; });
+
+    var gradient = ctx.createLinearGradient(0, 0, 0, 200);
+    gradient.addColorStop(0, 'rgba(43, 168, 158, 0.3)');
+    gradient.addColorStop(1, 'rgba(43, 168, 158, 0.02)');
+
+    msgChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: '消息数',
+                data: data,
+                borderColor: '#2BA89E',
+                backgroundColor: gradient,
+                fill: true,
+                tension: 0.4,
+                pointRadius: 2,
+                pointHoverRadius: 5,
+                pointBackgroundColor: '#2BA89E',
+                borderWidth: 2
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false }
+            },
+            scales: {
+                x: {
+                    grid: { color: 'rgba(0,0,0,0.05)' },
+                    ticks: { color: 'var(--text-secondary)', font: { size: 11 }, maxRotation: 45, minRotation: 45 }
+                },
+                y: {
+                    beginAtZero: true,
+                    grid: { color: 'rgba(0,0,0,0.05)' },
+                    ticks: { color: 'var(--text-secondary)', font: { size: 11 } }
+                }
+            }
+        }
+    });
+}
+
+function renderPluginTrendChart(trend) {
+    var ctx = document.getElementById('plugin-trend-chart').getContext('2d');
+    if (pluginChart) pluginChart.destroy();
+
+    var labels = trend.map(function(t) { return t.date.slice(5); });
+    var data = trend.map(function(t) { return t.count; });
+
+    var gradient = ctx.createLinearGradient(0, 0, 0, 200);
+    gradient.addColorStop(0, 'rgba(58, 110, 142, 0.3)');
+    gradient.addColorStop(1, 'rgba(58, 110, 142, 0.02)');
+
+    pluginChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: '调用次数',
+                data: data,
+                borderColor: '#3A6E8E',
+                backgroundColor: gradient,
+                fill: true,
+                tension: 0.4,
+                pointRadius: 2,
+                pointHoverRadius: 5,
+                pointBackgroundColor: '#3A6E8E',
+                borderWidth: 2
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false }
+            },
+            scales: {
+                x: {
+                    grid: { color: 'rgba(0,0,0,0.05)' },
+                    ticks: { color: 'var(--text-secondary)', font: { size: 11 }, maxRotation: 45, minRotation: 45 }
+                },
+                y: {
+                    beginAtZero: true,
+                    grid: { color: 'rgba(0,0,0,0.05)' },
+                    ticks: { color: 'var(--text-secondary)', font: { size: 11 } }
+                }
+            }
+        }
+    });
+}
+
+function statCard(icon, label, value, cls) {
+    return '<div class="card ' + cls + '">' +
+        '<div class="card-icon">' + icon + '</div>' +
+        '<div class="card-value">' + value + '</div>' +
+        '<div class="card-label">' + label + '</div>' +
+        '</div>';
+}
+
+// ============ 设备授权部分 ============
+var pendingDevices = [], approvedDevices = [], rejectedDevices = [];
+
+async function loadDevices() {
+    try {
+        var data = await window.api.device.list();
+        pendingDevices = data.pending || [];
+        approvedDevices = data.approved || [];
+        rejectedDevices = data.rejected || [];
+        renderDevices();
+    } catch (e) {
+        window.Toast.error("加载设备列表失败: " + e.message);
+    }
+}
+
+function renderDevices() {
+    document.getElementById("pending-count").textContent = "待批准 " + pendingDevices.length;
+    document.getElementById("approved-count").textContent = "已批准 " + approvedDevices.length;
+    document.getElementById("rejected-count").textContent = "已拒绝 " + rejectedDevices.length;
+
+    document.getElementById("device-pending-area").innerHTML = renderDeviceGroup(
+        pendingDevices, "pending",
+        "等待批准（点击「同意」允许该设备访问管理后台）",
+        "暂无等待批准的设备"
+    );
+
+    document.getElementById("device-approved-area").innerHTML = renderDeviceGroup(
+        approvedDevices, "approved",
+        "已授权设备（可访问管理后台）",
+        "暂无已批准的设备"
+    );
+
+    document.getElementById("device-rejected-area").innerHTML = renderDeviceGroup(
+        rejectedDevices, "rejected",
+        "已拒绝设备（需删除记录后才能重新申请）",
+        "暂无被拒绝的设备"
+    );
+}
+
+function renderDeviceGroup(list, type, subtitle, emptyMsg) {
+    if (!list || list.length === 0) {
+        return '<div style="font-size:12px;color:#a0a0c0;margin-bottom:8px;">' + subtitle + '</div>' +
+            '<div class="empty-panel">' + emptyMsg + '</div>';
+    }
+
+    var header = '<div style="font-size:12px;color:#a0a0c0;margin-bottom:8px;">' + subtitle + '</div>';
+    var html = header + '<div class="device-grid">';
+
+    for (var i = 0; i < list.length; i++) {
+        var d = list[i];
+        var name = d.name || "未命名设备";
+        var ip = d.ip || "-";
+        var ua = d.ua || "";
+        var token = d.token || "";
+        var isLocal = !!d.is_local || !!d.isLocal || ip === "127.0.0.1";
+        var approvedAt = d.approved_at || "";
+        var requestedAt = d.requested_at || "";
+        var rejectedAt = d.rejected_at || "";
+
+        var flagClass = "";
+        var flagText = "";
+        if (type === "pending") { flagClass = "flag-pending"; flagText = "待批准"; }
+        if (type === "approved") { flagClass = "flag-approved"; flagText = "已批准"; }
+        if (type === "rejected") { flagClass = "flag-rejected"; flagText = "已拒绝"; }
+
+        var cardClass = type === "pending" ? "device-card pending" : "device-card";
+        var localBadge = isLocal ? '<span class="flag flag-local">本机</span>' : "";
+        var timeRow = "";
+        if (approvedAt) timeRow = '<div class="row"><span class="label">批准时间</span><span class="value">' + approvedAt + '</span></div>';
+        else if (requestedAt) timeRow = '<div class="row"><span class="label">申请时间</span><span class="value">' + requestedAt + '</span></div>';
+        else if (rejectedAt) timeRow = '<div class="row"><span class="label">拒绝时间</span><span class="value">' + rejectedAt + '</span></div>';
+
+        var uaRow = ua ? '<div class="row"><span class="label">浏览器</span><span class="value">' + (ua.length > 60 ? ua.slice(0, 55) + "..." : ua) + '</span></div>' : '';
+
+        var actions = "";
+        if (type === "pending") {
+            actions = '<div class="device-actions">' +
+                '<button class="btn btn-sm btn-sec" onclick="rejectDevice(\'' + token + '\')">拒绝</button>' +
+                '<button class="btn btn-sm" onclick="approveDevice(\'' + token + '\')">同意</button>' +
+                '</div>';
+        } else if (type === "approved") {
+            actions = '<div class="device-actions">' +
+                '<button class="btn btn-sm btn-sec" onclick="renameDevicePrompt(\'' + token + '\', \'' + name.replace(/'/g, "\\'") + '\')">改名</button>' +
+                '<button class="btn btn-sm btn-sec" onclick="rejectDevice(\'' + token + '\')">撤回授权</button>' +
+                '<button class="btn btn-sm btn-sec" onclick="removeDevice(\'' + token + '\')">删除记录</button>' +
+                '</div>';
+        } else {
+            actions = '<div class="device-actions">' +
+                '<button class="btn btn-sm btn-sec" onclick="removeDevice(\'' + token + '\')">删除记录</button>' +
+                '</div>';
+        }
+
+        html += '<div class="' + cardClass + '">' +
+            '<div class="header">' +
+                '<span class="name">' + name + localBadge + '</span>' +
+                '<span class="flag ' + flagClass + '">' + flagText + '</span>' +
+            '</div>' +
+            '<div class="row"><span class="label">IP</span><span class="value">' + ip + '</span></div>' +
+            timeRow + uaRow + actions +
+        '</div>';
+    }
+
+    html += '</div>';
+    return html;
+}
+
+async function approveDevice(token) {
+    try {
+        await window.api.device.approve(token);
+        window.Toast.success("已批准该设备");
+        loadDevices();
+    } catch (e) {
+        window.Toast.error("批准失败: " + e.message);
+    }
+}
+
+async function rejectDevice(token) {
+    if (!confirm("确认拒绝/撤回此设备的访问权限？")) return;
+    try {
+        await window.api.device.reject(token);
+        window.Toast.success("已拒绝该设备");
+        loadDevices();
+    } catch (e) {
+        window.Toast.error("操作失败: " + e.message);
+    }
+}
+
+async function removeDevice(token) {
+    if (!confirm("确认删除此设备记录？")) return;
+    try {
+        await window.api.device.remove(token);
+        window.Toast.success("已删除记录");
+        loadDevices();
+    } catch (e) {
+        window.Toast.error("删除失败: " + e.message);
+    }
+}
+
+async function renameDevicePrompt(token, currentName) {
+    var newName = prompt("请输入新设备名称：", currentName || "");
+    if (!newName || newName.trim() === "" || newName.trim() === currentName) return;
+    try {
+        await window.api.device.rename(token, newName.trim());
+        window.Toast.success("设备已重命名");
+        loadDevices();
+    } catch (e) {
+        window.Toast.error("重命名失败: " + e.message);
+    }
+}
+
+async function restartBot() {
+    if (!confirm("确定要重启 Bot 吗？Bot 将在重启期间无法响应。")) return;
+    try {
+        var result = await window.api.bot.restart();
+        window.Toast.success("Bot 正在重启，请稍后刷新页面");
+        var btn = document.querySelector(".btn-danger");
+        if (btn) { btn.disabled = true; btn.textContent = "重启中..."; }
+        setTimeout(function() { location.reload(); }, 5000);
+    } catch (e) {
+        window.Toast.error("重启失败: " + e.message);
+    }
+}
+
+if (window.ThemeManager) window.ThemeManager.render("#theme-container");
+window.renderSidebar("dashboard");
+window.requireAuth().then(function(ok) {
+    if (ok) {
+        loadData();
+        loadDevices();
+        // 每 10 秒自动刷新仪表盘数据
+        setInterval(function() {
+            loadData();
+        }, 10000);
+    }
+});
+</script>
+</body>
+</html>

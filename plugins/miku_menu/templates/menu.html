@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            width: {card_width}px; 
+            min-height: {card_height}px; 
+            font-family: "PingFang SC", "Microsoft YaHei", sans-serif; 
+            position: relative; 
+            color: #1a1a2e; 
+            background: #1a1a2e url("{bg_data_uri}") center center / cover no-repeat;
+            overflow: hidden;
+        }
+        
+        body::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: rgba(26, 26, 46, 0.2);
+            z-index: 0;
+        }
+        
+        .bg-particles {
+            position: absolute;
+            inset: 0;
+            overflow: hidden;
+            pointer-events: none;
+            z-index: 1;
+        }
+        .particle {
+            position: absolute;
+            width: 4px;
+            height: 4px;
+            background: rgba(57, 197, 187, 0.5);
+            border-radius: 50%;
+            animation: float 6s ease-in-out infinite;
+        }
+        .particle:nth-child(1) { top: 10%; left: 20%; animation-delay: 0s; }
+        .particle:nth-child(2) { top: 25%; left: 80%; animation-delay: 1s; }
+        .particle:nth-child(3) { top: 45%; left: 15%; animation-delay: 2s; }
+        .particle:nth-child(4) { top: 60%; left: 85%; animation-delay: 3s; }
+        .particle:nth-child(5) { top: 75%; left: 35%; animation-delay: 4s; }
+        .particle:nth-child(6) { top: 30%; left: 50%; animation-delay: 2.5s; }
+        .particle:nth-child(7) { top: 85%; left: 65%; animation-delay: 1.5s; }
+        .particle:nth-child(8) { top: 15%; left: 60%; animation-delay: 5s; }
+        
+        @keyframes float {
+            0%, 100% { transform: translateY(0) scale(1); opacity: 0.5; }
+            50% { transform: translateY(-30px) scale(1.2); opacity: 0.25; }
+        }
+        
+        .container { 
+            position: relative; 
+            z-index: 10; 
+            padding: 24px 20px; 
+        }
+
+        .header { 
+            text-align: center; 
+            margin-bottom: 18px; 
+            position: relative;
+        }
+        .header::after {
+            content: "";
+            position: absolute;
+            bottom: -10px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 100px;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, #39C5BB, transparent);
+            border-radius: 2px;
+        }
+        
+        .logo-wrapper {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 64px;
+            height: 64px;
+            background: rgba(255, 255, 255, 0.35);
+            backdrop-filter: blur(10px);
+            border-radius: 18px;
+            margin-bottom: 10px;
+            box-shadow: 0 6px 24px rgba(57, 197, 187, 0.3), 0 0 0 1px rgba(255,255,255,0.1);
+            overflow: hidden;
+        }
+        .logo-icon {
+            width: 52px;
+            height: 52px;
+            object-fit: contain;
+        }
+        
+        .header-title { 
+            font-size: 26px; 
+            font-weight: 700; 
+            color: #fff; 
+            letter-spacing: 3px; 
+            margin-bottom: 4px;
+            text-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        }
+        .header-subtitle { 
+            font-size: 12px; 
+            color: rgba(255,255,255,0.8); 
+            letter-spacing: 5px;
+            text-transform: uppercase;
+        }
+
+        .guide-card {
+            background: rgba(255, 255, 255, 0.3);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.25);
+            border-radius: 12px;
+            padding: 10px 14px;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .guide-icon {
+            width: 28px;
+            height: 28px;
+            background: linear-gradient(135deg, #39C5BB, #2DA89E);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            flex-shrink: 0;
+        }
+        .guide-text {
+            font-size: 12px;
+            color: rgba(255,255,255,0.9);
+            line-height: 1.5;
+        }
+        .guide-text strong {
+            color: #39C5BB;
+            font-weight: 600;
+        }
+
+        .plugin-grid { 
+            display: grid; 
+            grid-template-columns: repeat(3, 1fr); 
+            gap: 12px; 
+        }
+
+        .plugin-card { 
+            background: rgba(255, 255, 255, 0.3);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.25);
+            border-radius: 14px;
+            padding: 14px;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .plugin-card::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, #39C5BB, transparent);
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        
+        .plugin-card:hover {
+            transform: translateY(-3px);
+            background: rgba(255, 255, 255, 0.4);
+            border-color: rgba(57, 197, 187, 0.4);
+            box-shadow: 0 8px 28px rgba(57, 197, 187, 0.2);
+        }
+        
+        .plugin-card:hover::before {
+            opacity: 1;
+        }
+        
+        .plugin-header { 
+            display: flex; 
+            align-items: center; 
+            margin-bottom: 8px; 
+        }
+        
+        .plugin-badge { 
+            display: inline-flex; 
+            align-items: center; 
+            justify-content: center; 
+            min-width: 22px; 
+            height: 22px; 
+            background: linear-gradient(135deg, #39C5BB, #2DA89E); 
+            border-radius: 6px; 
+            font-size: 11px; 
+            font-weight: 700; 
+            color: #fff; 
+            margin-right: 8px; 
+            flex-shrink: 0;
+            box-shadow: 0 2px 6px rgba(57, 197, 187, 0.35);
+            padding: 0 4px;
+        }
+        
+        .plugin-icon { 
+            font-size: 20px; 
+            margin-right: 6px; 
+            flex-shrink: 0;
+        }
+        
+        .plugin-name { 
+            font-size: 14px; 
+            font-weight: 600; 
+            color: #fff; 
+            flex: 1;
+            line-height: 1.3;
+        }
+        
+        .plugin-desc { 
+            font-size: 11.5px; 
+            color: rgba(255,255,255,0.75); 
+            line-height: 1.5; 
+            margin-bottom: 8px; 
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            min-height: 34px;
+        }
+        
+        .plugin-tags { 
+            display: flex; 
+            flex-wrap: wrap; 
+            gap: 4px; 
+        }
+        
+        .plugin-tag { 
+            font-size: 10px; 
+            color: rgba(255,255,255,0.9); 
+            background: rgba(57, 197, 187, 0.45); 
+            padding: 3px 8px; 
+            border-radius: 8px; 
+            border: 1px solid rgba(57, 197, 187, 0.35);
+            white-space: nowrap;
+        }
+
+        .footer { 
+            text-align: center; 
+            margin-top: 20px; 
+            padding-top: 14px; 
+            border-top: 1px solid rgba(255, 255, 255, 0.25); 
+        }
+        
+        .footer-text {
+            font-size: 11px; 
+            color: rgba(255,255,255,0.7); 
+            letter-spacing: 2px;
+        }
+        
+        .footer-version {
+            font-size: 9.5px;
+            color: rgba(255,255,255,0.6);
+            margin-top: 4px;
+            letter-spacing: 1px;
+        }
+    </style>
+</head>
+<body>
+    <div class="bg-particles">
+        <div class="particle"></div>
+        <div class="particle"></div>
+        <div class="particle"></div>
+        <div class="particle"></div>
+        <div class="particle"></div>
+        <div class="particle"></div>
+        <div class="particle"></div>
+        <div class="particle"></div>
+    </div>
+    
+    <div class="container">
+        <div class="header">
+            <div class="logo-wrapper">
+                <img class="logo-icon" src="{title_icon_uri}" alt="Miku" onerror="this.style.display='none'; this.parentElement.innerHTML='<span style=font-size:42px>&#127925;</span>';">
+            </div>
+            <div class="header-title">MIKUBOT</div>
+            <div class="header-subtitle">Function Menu</div>
+        </div>
+
+        <div class="guide-card">
+            <div class="guide-icon">💡</div>
+            <div class="guide-text">
+                发送 <strong>详细帮助 + 插件名/编号</strong> 查看详情<br>
+                例如：<strong>详细帮助 天气</strong> 或 <strong>详细帮助 1</strong>
+            </div>
+        </div>
+
+        <div class="plugin-grid">
+            {plugins_html}
+        </div>
+
+        <div class="footer">
+            <div class="footer-text">MIKUBOT · HATSUNE MIKU</div>
+            <div class="footer-version">Version 2.0</div>
+        </div>
+    </div>
+</body>
+</html>

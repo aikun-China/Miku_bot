@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            width: 600px;
+            min-height: 400px;
+            font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+            position: relative;
+            color: #fff;
+            overflow: hidden;
+        }
+        .bg {
+            position: fixed; top: 0; left: 0;
+            width: 100%; height: 100%;
+            background-size: cover; background-position: center;
+            filter: blur(4px) brightness(0.85);
+            z-index: -1;
+        }
+        .overlay {
+            position: fixed; top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: linear-gradient(180deg, rgba(0, 100, 150, 0.35) 0%, rgba(0, 0, 0, 0.5) 100%);
+            z-index: 0;
+        }
+        .container {
+            position: relative; z-index: 1;
+            padding: 25px 25px 30px;
+        }
+        .header {
+            display: flex; align-items: center; gap: 15px;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid rgba(0, 212, 255, 0.2);
+        }
+        .header-icon {
+            width: 50px; height: 50px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #00d4ff, #0099cc);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 26px;
+            box-shadow: 0 0 20px rgba(0, 212, 255, 0.5);
+        }
+        .header-text .name {
+            font-size: 20px; font-weight: bold; color: #00d4ff;
+            text-shadow: 0 0 10px rgba(0, 212, 255, 0.5);
+        }
+        .header-text .subtitle {
+            font-size: 12px; color: rgba(255, 255, 255, 0.6);
+            margin-top: 3px;
+        }
+        .user-box {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 12px 12px 12px 0;
+            padding: 12px 16px;
+            margin-bottom: 15px;
+            font-size: 13px;
+            color: rgba(255, 255, 255, 0.7);
+            line-height: 1.6;
+            max-width: 85%;
+            word-break: break-word;
+            align-self: flex-end;
+            margin-left: auto;
+        }
+        .user-label {
+            font-size: 11px; color: rgba(255, 255, 255, 0.5);
+            margin-bottom: 5px; display: block;
+        }
+        .reply-box {
+            background: rgba(0, 212, 255, 0.08);
+            border: 1px solid rgba(0, 212, 255, 0.3);
+            border-radius: 0 12px 12px 12px;
+            padding: 18px 20px;
+            font-size: 15px;
+            line-height: 1.8;
+            color: #fff;
+            white-space: pre-wrap;
+            word-break: break-word;
+            box-shadow: 0 4px 20px rgba(0, 212, 255, 0.1);
+        }
+        .reply-label {
+            font-size: 11px; color: #00d4ff;
+            margin-bottom: 8px; display: block;
+            font-weight: bold;
+        }
+        .image-hint {
+            margin-top: 15px;
+            font-size: 11px; color: rgba(255, 255, 255, 0.4);
+            text-align: right;
+        }
+    </style>
+</head>
+<body>
+    <div class="bg" {% if bg_data_uri %}style="background-image: url('{{ bg_data_uri }}');"{% endif %}></div>
+    <div class="overlay"></div>
+    <div class="container">
+        <div class="header">
+            <div class="header-icon">🎤</div>
+            <div class="header-text">
+                <div class="name">初音未来</div>
+                <div class="subtitle">Hatsune Miku · AI 聊天</div>
+            </div>
+        </div>
+        <div class="user-box">
+            <span class="user-label">你的消息</span>
+            {{ user_text }}
+            {% if has_images %}
+            <div class="image-hint">📷 已附上 {{ image_count }} 张图片</div>
+            {% endif %}
+        </div>
+        <div class="reply-box">
+            <span class="reply-label">🎵 Miku 的回复</span>
+            {{ reply_text }}
+        </div>
+    </div>
+</body>
+</html>

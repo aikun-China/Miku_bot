@@ -9,6 +9,7 @@
 - **依赖自动检测**：启动前自动检测 `.venv` 依赖，缺失则自动安装
 - **首次配置向导**：终端交互式输入管理员 QQ 号和密码
 - **自定义日志系统**：ANSI 高亮、消息截断、心跳过滤、文件轮转
+- **版本管理 & 自动更新**：从 GitHub 检查新版本，一键下载更新并重启
 
 ---
 
@@ -43,8 +44,15 @@ miku_bot/
 │   ├── check_deps.py                # 依赖检测 + 自动安装
 │   ├── deps_config.py               # 依赖配置（从 requirements.txt 解析）
 │   ├── config_manager.py            # YAML 配置管理（bot.yaml）
+│   ├── version_manager.py           # 版本管理（GitHub 版本检查）
+│   ├── updater.py                   # 自动更新（下载 + 覆盖 + 重启）
 │   ├── html_render.py               # HTML 模板渲染
 │   ├── cache_cleanup.py             # 缓存图片定时清理
+│   └── templates/                   # HTML 模板
+│       ├── ping.html                # 状态卡片
+│       └── weather.html             # 天气卡片
+│
+├── version.json                     # 版本信息（自动维护）
 │
 ├── config/                          # 配置文件
 │   └── bot.yaml                     # 插件统一配置（YAML 格式）
@@ -164,6 +172,8 @@ Bot 重新读取 `config/bot.yaml`，无需重启。
 | `重启` | 超级用户 | `os.execv` 替换当前进程，重新加载所有配置和插件 |
 | `配置检查` | 超级用户 | 查看 SUPERUSERS、WEBUI_PASSWORD、监听端口、已注册插件配置区 |
 | `刷新配置` | 超级用户 | 热加载 `config/bot.yaml`，不重启 Bot |
+| `检查更新` | 超级用户 | 从 GitHub 检查是否有新版本 |
+| `立即更新` | 超级用户 | 下载最新代码并自动重启 Bot |
 
 ---
 
@@ -225,6 +235,82 @@ Bot 启动时自动替换 NoneBot 默认日志为自定义格式：
 
 ```
 ws://127.0.0.1:3108/onebot/v11/ws
+```
+
+---
+
+## 版本管理与自动更新
+
+### 检查更新
+
+在 QQ 中发送（超级用户）：
+
+```
+检查更新
+```
+
+Bot 自动连接 GitHub 检查最新版本：
+
+```
+🎵 发现新版本！
+━━━━━━━━━━━━
+当前版本: 0.1.0
+最新版本: 0.2.0 (abc12345)
+更新时间: 2026-06-20T10:00:00
+更新说明: 新增天气插件、优化截图速度...
+━━━━━━━━━━━━
+发送「立即更新」开始下载更新
+```
+
+如果已是最新：
+
+```
+🎵 MikuBot 已是最新版
+━━━━━━━━━━━━
+当前版本: 0.1.0
+Commit: abc12345
+更新时间: 2026-06-18T12:00:00
+上次检查: 2026-06-19T08:00:00
+━━━━━━━━━━━━
+仓库: https://github.com/aikun-China/Miku_bot
+```
+
+### 立即更新
+
+```
+立即更新
+```
+
+Bot 自动下载最新代码并重启：
+
+```
+🎵 更新完成！
+━━━━━━━━━━━━
+更新文件: bot.py, requirements.txt
+更新目录: utils, plugins
+━━━━━━━━━━━━
+🎵 Miku 正在重启应用更新...
+```
+
+### 更新策略
+
+- **保留用户数据**：`.env`、`config/`、`data/`、`logs/`、`.venv/` 不会被覆盖
+- **更新核心代码**：`bot.py`、`utils/`、`plugins/`、`start.bat` 等
+- **更新后自动重启**：下载完成后自动 `execv` 重启 Bot
+
+### 版本信息文件
+
+`version.json`（自动维护）：
+
+```json
+{
+  "version": "0.1.0",
+  "commit_hash": "abc12345",
+  "update_time": "2026-06-18T12:00:00",
+  "github_repo": "aikun-China/Miku_bot",
+  "check_interval_hours": 24,
+  "last_check_time": "2026-06-19T08:00:00"
+}
 ```
 
 ---

@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>申请管理 - MikuBot 管理后台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/style.css">
+<script src="/js/theme.js"></script>
+<style>
+body{font-family:"Noto Sans SC",sans-serif;background:linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 50%, var(--theme-glow) 100%);color:var(--text-primary);}
+.main{min-height:100vh;padding:28px 32px;margin-left:240px;}
+.page-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:12px;}
+.page-title{font-size:22px;font-weight:700;margin-bottom:8px;color:var(--text-primary);}
+.page-hint{color:var(--text-secondary);font-size:13px;margin-bottom:0;}
+
+.btn{padding:10px 18px;background:linear-gradient(135deg,#2BA89E,#3A6E8E);border:none;border-radius:var(--radius-sm);color:#fff;font-size:14px;font-weight:600;cursor:pointer;transition:0.2s;}
+.btn:hover{transform:translateY(-1px);box-shadow:0 8px 20px var(--theme-glow);}
+.btn-sec{background:rgba(255,255,255,0.7);border:1px solid var(--border-color);color:var(--text-secondary);backdrop-filter:blur(10px) saturate(180%);-webkit-backdrop-filter:blur(10px) saturate(180%);box-shadow:inset 0 1px 0 rgba(255,255,255,0.6);}
+.btn-sm{padding:8px 14px;font-size:13px;}
+.btn-danger{background:linear-gradient(135deg,#e74c3c,#c0392b);}
+.btn-success{background:linear-gradient(135deg,#27ae60,#2ecc71);}
+.btn-danger:hover{box-shadow:0 8px 20px rgba(231,76,60,0.3);}
+.btn-success:hover{box-shadow:0 8px 20px rgba(39,174,96,0.3);}
+
+.stats-bar{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px;}
+.stat-card{background:rgba(255,255,255,0.7);backdrop-filter:blur(18px) saturate(180%);-webkit-backdrop-filter:blur(18px) saturate(180%);border:1px solid var(--border-color);border-radius:var(--radius-sm);padding:16px;text-align:center;box-shadow:inset 0 1px 0 rgba(255,255,255,0.6);}
+.stat-value{font-size:24px;font-weight:700;background:var(--gradient);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;}
+.stat-label{font-size:12px;color:var(--text-secondary);margin-top:4px;}
+
+.filter-bar{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;}
+.filter-btn{padding:8px 16px;background:rgba(255,255,255,0.7);border:1px solid var(--border-color);border-radius:var(--radius-sm);color:var(--text-secondary);font-size:13px;cursor:pointer;transition:0.2s;}
+.filter-btn.active{background:linear-gradient(135deg,#2BA89E,#3A6E8E);color:#fff;border-color:transparent;}
+
+.req-list{display:flex;flex-direction:column;gap:12px;}
+.req-card{background:rgba(255,255,255,0.7);backdrop-filter:blur(18px) saturate(180%);-webkit-backdrop-filter:blur(18px) saturate(180%);border:1px solid var(--border-color);border-radius:var(--radius-sm);padding:16px;box-shadow:inset 0 1px 0 rgba(255,255,255,0.6),0 6px 18px rgba(31,58,74,0.08);transition:0.2s;}
+.req-card:hover{transform:translateY(-1px);box-shadow:0 10px 24px rgba(31,58,74,0.12);}
+.req-card.handled{opacity:0.6;}
+.req-header{display:flex;align-items:center;gap:12px;margin-bottom:12px;}
+.req-avatar{width:48px;height:48px;border-radius:12px;background:linear-gradient(135deg,var(--theme-glow),var(--theme-primary));display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:18px;object-fit:cover;flex-shrink:0;}
+.req-info{flex:1;min-width:0;}
+.req-type{display:inline-block;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600;margin-bottom:4px;}
+.type-friend{background:rgba(39,174,96,0.15);color:#27ae60;}
+.type-group{background:rgba(52,152,219,0.15);color:#3498db;}
+.req-title{font-size:15px;font-weight:600;color:var(--text-primary);margin-bottom:2px;word-break:break-all;}
+.req-sub{font-size:12px;color:var(--text-muted);}
+.req-status{flex-shrink:0;padding:4px 12px;border-radius:12px;font-size:12px;font-weight:600;}
+.status-pending{background:rgba(241,196,15,0.15);color:#f39c12;}
+.status-approved{background:rgba(39,174,96,0.15);color:#27ae60;}
+.status-rejected{background:rgba(231,76,60,0.15);color:#e74c3c;}
+.status-expired{background:rgba(149,165,166,0.15);color:#95a5a6;}
+
+.req-detail{background:var(--bg-hover);border-radius:var(--radius-sm);padding:12px;margin-bottom:12px;font-size:13px;color:var(--text-secondary);}
+.req-detail-row{display:flex;margin-bottom:6px;}
+.req-detail-row:last-child{margin-bottom:0;}
+.req-detail-label{width:80px;flex-shrink:0;color:var(--text-muted);}
+.req-detail-value{flex:1;word-break:break-all;color:var(--text-primary);}
+
+.req-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;}
+
+.empty-panel{background:var(--bg-hover);border:1px dashed var(--border-color);border-radius:var(--radius-sm);padding:40px;text-align:center;color:var(--text-secondary);font-size:14px;}
+
+.modal-mask{position:fixed;inset:0;background:rgba(0,0,0,0.5);display:none;align-items:center;justify-content:center;z-index:1000;}
+.modal-mask.show{display:flex;}
+.modal{background:var(--bg-primary);border-radius:var(--radius);padding:24px;width:90%;max-width:400px;box-shadow:0 20px 60px rgba(0,0,0,0.3);}
+.modal-title{font-size:18px;font-weight:700;margin-bottom:16px;color:var(--text-primary);}
+.modal-input{width:100%;padding:10px 14px;background:var(--bg-hover);border:1px solid var(--border-color);border-radius:var(--radius-sm);color:var(--text-primary);font-size:14px;outline:none;margin-bottom:16px;box-sizing:border-box;}
+.modal-input:focus{border-color:var(--theme-primary);}
+.modal-actions{display:flex;gap:10px;justify-content:flex-end;}
+
+@media (max-width: 768px) {
+    .main{margin-left:0;padding:72px 14px 20px 14px;}
+    .page-title{font-size:18px;text-align:center;}
+    .page-hint{font-size:12px;text-align:center;margin-bottom:16px;}
+    .stats-bar{grid-template-columns:repeat(2,1fr);gap:8px;}
+    .stat-value{font-size:20px;}
+    .req-header{flex-wrap:wrap;}
+}
+</style>
+</head>
+<body>
+<div id="sidebar"></div>
+<div class="main">
+    <div class="page-header">
+        <div>
+            <h1 class="page-title">申请管理</h1>
+            <p class="page-hint">处理好友请求和群组邀请/申请。</p>
+        </div>
+        <div id="theme-container"></div>
+    </div>
+
+    <div class="stats-bar" id="stats-bar"></div>
+
+    <div class="filter-bar">
+        <button class="filter-btn active" onclick="setFilter('all')">全部</button>
+        <button class="filter-btn" onclick="setFilter('pending')">待处理</button>
+        <button class="filter-btn" onclick="setFilter('friend')">好友请求</button>
+        <button class="filter-btn" onclick="setFilter('group')">群请求</button>
+        <button class="btn btn-sec btn-sm" onclick="loadRequests()" style="margin-left:auto;">刷新</button>
+    </div>
+
+    <div id="req-list"></div>
+</div>
+
+<div class="modal-mask" id="reject-modal">
+    <div class="modal">
+        <div class="modal-title">拒绝申请</div>
+        <input type="text" class="modal-input" id="reject-reason" placeholder="拒绝原因（可选）">
+        <div class="modal-actions">
+            <button class="btn btn-sec" onclick="closeRejectModal()">取消</button>
+            <button class="btn btn-danger" onclick="confirmReject()">确认拒绝</button>
+        </div>
+    </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/app.js"></script>
+<script>
+var allRequests = [];
+var currentFilter = 'all';
+var currentRejectId = null;
+
+async function loadRequests() {
+    try {
+        var data = await window.api.requests.list();
+        allRequests = data.requests || [];
+        renderStats();
+        renderList();
+    } catch (e) {
+        document.getElementById("req-list").innerHTML = '<div class="empty-panel">加载失败: ' + e.message + '</div>';
+    }
+}
+
+function renderStats() {
+    var pending = allRequests.filter(function(r) { return !r.handled; }).length;
+    var friendCount = allRequests.filter(function(r) { return r.type === 'friend'; }).length;
+    var groupCount = allRequests.filter(function(r) { return r.type === 'group'; }).length;
+    var approved = allRequests.filter(function(r) { return r.action === 'approve'; }).length;
+
+    var statsBar = document.getElementById("stats-bar");
+    statsBar.innerHTML =
+        '<div class="stat-card"><div class="stat-value">' + pending + '</div><div class="stat-label">待处理</div></div>' +
+        '<div class="stat-card"><div class="stat-value">' + friendCount + '</div><div class="stat-label">好友请求</div></div>' +
+        '<div class="stat-card"><div class="stat-value">' + groupCount + '</div><div class="stat-label">群请求</div></div>' +
+        '<div class="stat-card"><div class="stat-value">' + approved + '</div><div class="stat-label">已同意</div></div>';
+}
+
+function setFilter(filter) {
+    currentFilter = filter;
+    var btns = document.querySelectorAll('.filter-btn');
+    btns.forEach(function(b) { b.classList.remove('active'); });
+    event.target.classList.add('active');
+    renderList();
+}
+
+function renderList() {
+    var list = allRequests;
+
+    if (currentFilter === 'pending') {
+        list = list.filter(function(r) { return !r.handled; });
+    } else if (currentFilter === 'friend') {
+        list = list.filter(function(r) { return r.type === 'friend'; });
+    } else if (currentFilter === 'group') {
+        list = list.filter(function(r) { return r.type === 'group'; });
+    }
+
+    var container = document.getElementById("req-list");
+    if (!list || list.length === 0) {
+        container.innerHTML = '<div class="empty-panel">暂无申请记录</div>';
+        return;
+    }
+
+    var html = '<div class="req-list">';
+    for (var i = 0; i < list.length; i++) {
+        var r = list[i];
+        html += renderReqCard(r);
+    }
+    html += '</div>';
+    container.innerHTML = html;
+}
+
+function renderReqCard(r) {
+    var isFriend = r.type === 'friend';
+    var typeClass = isFriend ? 'type-friend' : 'type-group';
+    var typeLabel = isFriend ? '好友请求' : (r.sub_type === 'invite' ? '群邀请' : '加群请求');
+
+    var title = isFriend
+        ? ('QQ: ' + r.user_id)
+        : (r.group_name || ('群' + r.group_id));
+    var sub = isFriend ? '' : (r.user_name || r.user_id) + ' (' + r.user_id + ')';
+
+    var avatar = isFriend ? (r.avatar || '') : (r.group_avatar || '');
+    var avatarText = title.charAt(0).toUpperCase();
+    var avatarHtml = avatar
+        ? '<img class="req-avatar" src="' + avatar + '" alt="' + title + '">'
+        : '<div class="req-avatar">' + avatarText + '</div>';
+
+    var statusClass = 'status-pending';
+    var statusLabel = '待处理';
+    if (r.handled) {
+        if (r.action === 'approve') { statusClass = 'status-approved'; statusLabel = '已同意'; }
+        else if (r.action === 'reject') { statusClass = 'status-rejected'; statusLabel = '已拒绝'; }
+        else if (r.action === 'expired') { statusClass = 'status-expired'; statusLabel = '已过期'; }
+    }
+
+    var detailRows = '';
+    if (isFriend) {
+        detailRows += '<div class="req-detail-row"><div class="req-detail-label">QQ号</div><div class="req-detail-value">' + r.user_id + '</div></div>';
+    } else {
+        detailRows += '<div class="req-detail-row"><div class="req-detail-label">群号</div><div class="req-detail-value">' + r.group_id + '</div></div>';
+        detailRows += '<div class="req-detail-row"><div class="req-detail-label">' + (r.sub_type === 'invite' ? '邀请者' : '申请人') + '</div><div class="req-detail-value">' + (r.user_name || r.user_id) + ' (' + r.user_id + ')</div></div>';
+    }
+    if (r.comment) {
+        detailRows += '<div class="req-detail-row"><div class="req-detail-label">验证信息</div><div class="req-detail-value">' + escapeHtml(r.comment) + '</div></div>';
+    }
+    detailRows += '<div class="req-detail-row"><div class="req-detail-label">申请时间</div><div class="req-detail-value">' + r.time + '</div></div>';
+    if (r.handled && r.handle_time) {
+        detailRows += '<div class="req-detail-row"><div class="req-detail-label">处理时间</div><div class="req-detail-value">' + r.handle_time + '</div></div>';
+    }
+    if (r.reason) {
+        detailRows += '<div class="req-detail-row"><div class="req-detail-label">拒绝原因</div><div class="req-detail-value">' + escapeHtml(r.reason) + '</div></div>';
+    }
+
+    var actions = '';
+    if (!r.handled) {
+        actions = '<div class="req-actions">' +
+            '<button class="btn btn-sm btn-success" onclick="approveReq(' + r.id + ')">同意</button>' +
+            '<button class="btn btn-sm btn-danger" onclick="openRejectModal(' + r.id + ')">拒绝</button>' +
+            '</div>';
+    }
+
+    return '<div class="req-card ' + (r.handled ? 'handled' : '') + '">' +
+        '<div class="req-header">' +
+            avatarHtml +
+            '<div class="req-info">' +
+                '<span class="req-type ' + typeClass + '">' + typeLabel + '</span>' +
+                '<div class="req-title">' + escapeHtml(title) + '</div>' +
+                (sub ? '<div class="req-sub">' + escapeHtml(sub) + '</div>' : '') +
+            '</div>' +
+            '<span class="req-status ' + statusClass + '">' + statusLabel + '</span>' +
+        '</div>' +
+        '<div class="req-detail">' + detailRows + '</div>' +
+        actions +
+    '</div>';
+}
+
+async function approveReq(id) {
+    if (!confirm('确定要同意这个申请吗？')) return;
+    try {
+        var data = await window.api.requests.approve(id);
+        if (data.success !== false) {
+            showToast('已同意', 'success');
+            loadRequests();
+        } else {
+            showToast(data.message || '操作失败', 'error');
+        }
+    } catch (e) {
+        showToast('操作失败: ' + e.message, 'error');
+    }
+}
+
+function openRejectModal(id) {
+    currentRejectId = id;
+    document.getElementById('reject-reason').value = '';
+    document.getElementById('reject-modal').classList.add('show');
+}
+
+function closeRejectModal() {
+    currentRejectId = null;
+    document.getElementById('reject-modal').classList.remove('show');
+}
+
+async function confirmReject() {
+    var id = currentRejectId;
+    if (!id) return;
+    var reason = document.getElementById('reject-reason').value.trim();
+    closeRejectModal();
+
+    try {
+        var data = await window.api.requests.reject(id, reason);
+        if (data.success !== false) {
+            showToast('已拒绝', 'success');
+            loadRequests();
+        } else {
+            showToast(data.message || '操作失败', 'error');
+        }
+    } catch (e) {
+        showToast('操作失败: ' + e.message, 'error');
+    }
+}
+
+function escapeHtml(text) {
+    if (!text) return '';
+    var div = document.createElement('div');
+    div.appendChild(document.createTextNode(text));
+    return div.innerHTML;
+}
+
+function showToast(msg, type) {
+    var toast = document.createElement('div');
+    toast.style.cssText = 'position:fixed;top:20px;right:20px;padding:12px 20px;border-radius:8px;color:#fff;font-size:14px;z-index:2000;transform:translateX(120%);transition:transform 0.3s;';
+    if (type === 'success') toast.style.background = 'linear-gradient(135deg,#27ae60,#2ecc71)';
+    else if (type === 'error') toast.style.background = 'linear-gradient(135deg,#e74c3c,#c0392b)';
+    else toast.style.background = 'linear-gradient(135deg,#2BA89E,#3A6E8E)';
+    toast.textContent = msg;
+    document.body.appendChild(toast);
+    setTimeout(function() { toast.style.transform = 'translateX(0)'; }, 10);
+    setTimeout(function() {
+        toast.style.transform = 'translateX(120%)';
+        setTimeout(function() { toast.remove(); }, 300);
+    }, 2500);
+}
+
+if (window.ThemeManager) window.ThemeManager.render("#theme-container");
+renderSidebar("requests");
+requireAuth().then(function(ok){ if (ok) loadRequests(); });
+</script>
+</body>
+</html>

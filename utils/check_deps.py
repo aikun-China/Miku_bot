@@ -101,14 +101,14 @@ def check_all():
     # 2. 从 requirements.txt 获取依赖列表
     PYTHON_DEPS = get_python_deps()
 
-    # 3. 检测 Python 依赖
+    # 3. 检测 Python 依赖（仅打印缺失项，避免刷屏）
     missing = []
+    total = len(PYTHON_DEPS)
     for pip_name, import_name in PYTHON_DEPS.items():
-        if _check_package(import_name):
-            print(f"  [OK] {pip_name}")
-        else:
+        if not _check_package(import_name):
             print(f"  [MISS] {pip_name}")
             missing.append(pip_name)
+    print(f"[OK] 依赖检测完成（{total - len(missing)}/{total} 已安装）")
 
     # 4. 自动安装缺失的依赖
     if missing:
@@ -120,15 +120,13 @@ def check_all():
         print("[OK] 依赖安装完成")
 
     # 5. 检测 Edge 浏览器
-    print("")
-    print("[INFO] 检测浏览器...")
     if _has_system_edge():
-        print("  [OK] 系统 Edge 已安装")
+        print("[OK] 系统 Edge 已就绪")
     else:
-        print("  [WARN] 未检测到系统 Edge，截图功能可能不可用")
+        print("[WARN] 未检测到系统 Edge，截图功能可能不可用")
         print("       请安装 Microsoft Edge: https://www.microsoft.com/edge")
 
-    print("[OK] 依赖检测通过\n")
+    print("")
 
 
 if __name__ == "__main__":

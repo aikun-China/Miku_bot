@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    width: 600px;
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: linear-gradient(135deg, #00E5E8 0%, #00B8BA 100%);
+    padding: 30px;
+}
+.card {
+    background: white;
+    border-radius: 20px;
+    padding: 30px;
+    box-shadow: 0 10px 40px rgba(0, 184, 186, 0.35);
+}
+.header {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    margin-bottom: 25px;
+    padding-bottom: 20px;
+    border-bottom: 2px solid #E0FFFF;
+}
+.avatar {
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #00E5E8, #00B8BA);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 28px;
+}
+.title {
+    font-size: 24px;
+    font-weight: bold;
+    color: #007A7C;
+}
+.subtitle {
+    font-size: 14px;
+    color: #00B8BA;
+    margin-top: 4px;
+}
+.info-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 12px 0;
+    border-bottom: 1px solid #E0FFFF;
+}
+.label { color: #555; font-size: 15px; }
+.value { color: #007A7C; font-size: 15px; font-weight: 500; }
+.status-badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 13px;
+    font-weight: bold;
+}
+.status-online { background: #E0FFFF; color: #007A7C; }
+.status-offline { background: #FFE0E0; color: #C25A5A; }
+.footer {
+    margin-top: 20px;
+    text-align: center;
+    font-size: 12px;
+    color: #88CCCD;
+}
+</style>
+</head>
+<body>
+<div class="card">
+    <div class="header">
+        <div class="avatar">🎵</div>
+        <div>
+            <div class="title">MikuBot 状态</div>
+            <div class="subtitle">初音未来，永远相伴</div>
+        </div>
+    </div>
+    <div class="info-row">
+        <span class="label">👤 调用者</span>
+        <span class="value">{nickname}</span>
+    </div>
+    <div class="info-row">
+        <span class="label">🆔 QQ号</span>
+        <span class="value">{user_id}</span>
+    </div>
+    <div class="info-row">
+        <span class="label">✅ Bot状态</span>
+        <span class="value"><span class="status-badge status-online">{status}</span></span>
+    </div>
+    <div class="info-row">
+        <span class="label">⏱️ 响应时间</span>
+        <span class="value">{response_time}ms</span>
+    </div>
+    <div class="footer">
+        MikuBot v0.1.0 | 基于 Nonebot2
+    </div>
+</div>
+</body>
+</html>

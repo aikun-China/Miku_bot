@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+    width: 2560px;
+    height: 1440px;
+    font-family: "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    position: relative;
+    color: #1a2a4a;
+    overflow: hidden;
+}
+
+.bg-layer {
+    position: absolute;
+    inset: 0;
+    background: url("{bg_data_uri}") center top / 100% 100% no-repeat;
+    z-index: 0;
+}
+
+.overlay {
+    position: absolute;
+    inset: 0;
+    background: #F0E8FF;
+    opacity: 0.1;
+    mix-blend-mode: soft-light;
+    z-index: 1;
+}
+
+.content {
+    position: relative;
+    z-index: 2;
+    width: 2560px;
+    height: 1440px;
+    padding: 60px 80px 50px;
+    display: flex;
+    flex-direction: column;
+}
+
+/* 标题 */
+.header {
+    text-align: center;
+    margin-bottom: 40px;
+    flex-shrink: 0;
+}
+.header-title {
+    font-size: 72px;
+    font-weight: bold;
+    letter-spacing: 8px;
+    color: #1a1a3e;
+    text-shadow: 0 2px 8px rgba(255, 255, 255, 0.8), 0 0 20px rgba(0, 0, 0, 0.15);
+}
+
+/* 主体左右分栏 */
+.main-body {
+    display: flex;
+    flex: 1;
+    gap: 40px;
+    min-height: 0;
+}
+
+/* 左侧栏 — 宽松排版 */
+.left-panel {
+    width: 720px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 40px;
+    background: rgba(255, 255, 255, 0.35);
+    backdrop-filter: blur(24px) saturate(150%);
+    -webkit-backdrop-filter: blur(24px) saturate(150%);
+    border-radius: 32px;
+    box-shadow: 0 12px 40px rgba(0, 168, 204, 0.25);
+    border: 3px solid rgba(0, 168, 204, 0.3);
+    padding: 50px 30px;
+}
+
+.avatar-box {
+    width: 340px;
+    height: 340px;
+    border-radius: 50%;
+    overflow: hidden;
+    background: linear-gradient(135deg, #00d4ff, #0088aa);
+    border: 8px solid rgba(255, 255, 255, 0.9);
+    box-shadow: 0 12px 40px rgba(0, 168, 204, 0.35);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+.avatar-box img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+.avatar-box .avatar-fallback {
+    font-size: 120px;
+    font-weight: bold;
+    color: #ffffff;
+    text-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.user-info-text {
+    text-align: center;
+    width: 100%;
+}
+.user-name {
+    font-size: 56px;
+    font-weight: bold;
+    color: #1a1a3e;
+    margin-bottom: 16px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.user-id {
+    font-size: 30px;
+    color: #2a2a5e;
+    margin-bottom: 8px;
+}
+.user-uid {
+    font-size: 28px;
+    color: #3a3a6e;
+    letter-spacing: 2px;
+    margin-bottom: 16px;
+}
+
+.left-stats {
+    width: 100%;
+    display: flex;
+    justify-content: center;
+    gap: 60px;
+    padding: 30px 20px;
+    background: linear-gradient(135deg, rgba(0, 229, 232, 0.12), rgba(127, 219, 255, 0.12));
+    border-radius: 32px;
+    border: 2px solid rgba(0, 168, 204, 0.2);
+}
+.left-stat-item {
+    text-align: center;
+}
+.left-stat-value {
+    font-size: 56px;
+    font-weight: bold;
+    color: #1a1a3e;
+    line-height: 1.1;
+}
+.left-stat-label {
+    font-size: 28px;
+    color: #2a2a5e;
+    margin-top: 8px;
+    letter-spacing: 1px;
+}
+
+/* 左侧统计行2：签到 + 消息 */
+.left-stats-row2 {
+    width: 100%;
+    display: flex;
+    justify-content: center;
+    gap: 60px;
+    padding: 30px 20px;
+    background: linear-gradient(135deg, rgba(255, 183, 197, 0.15), rgba(160, 216, 239, 0.15));
+    border-radius: 32px;
+    border: 2px solid rgba(255, 183, 197, 0.3);
+}
+.left-stats-row2 .left-stat-value {
+    color: #5a2a3a;
+}
+.left-stats-row2 .left-stat-label {
+    color: #6a3a4a;
+}
+
+/* 右侧栏 */
+.right-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    min-width: 0;
+}
+
+/* 右上：最常用3个插件 */
+.top-freq-plugins {
+    display: flex;
+    gap: 24px;
+    flex-shrink: 0;
+}
+.top-freq-card {
+    flex: 1;
+    background: rgba(255, 255, 255, 0.35);
+    backdrop-filter: blur(24px) saturate(150%);
+    -webkit-backdrop-filter: blur(24px) saturate(150%);
+    border-radius: 32px;
+    box-shadow: 0 12px 40px rgba(0, 168, 204, 0.25);
+    border: 3px solid rgba(0, 168, 204, 0.3);
+    padding: 40px 24px;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-height: 0;
+}
+.top-freq-rank {
+    font-size: 28px;
+    color: #3a3a6e;
+    font-weight: bold;
+    margin-bottom: 12px;
+}
+.top-freq-name {
+    font-size: 36px;
+    font-weight: bold;
+    color: #1a1a3e;
+    line-height: 1.2;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.top-freq-count {
+    font-size: 30px;
+    color: #2a2a5e;
+    margin-top: 12px;
+    letter-spacing: 1px;
+}
+
+/* 右中：背包 */
+.backpack-box {
+    flex: 1;
+    background: rgba(255, 255, 255, 0.35);
+    backdrop-filter: blur(24px) saturate(150%);
+    -webkit-backdrop-filter: blur(24px) saturate(150%);
+    border-radius: 32px;
+    box-shadow: 0 12px 40px rgba(0, 168, 204, 0.25);
+    border: 3px solid rgba(0, 168, 204, 0.3);
+    padding: 40px 50px;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+.backpack-title {
+    font-size: 36px;
+    font-weight: bold;
+    color: #1a1a3e;
+    margin-bottom: 28px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-shrink: 0;
+}
+.backpack-title::before {
+    content: "🎒";
+    font-size: 40px;
+}
+.backpack-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    overflow-y: auto;
+}
+.item-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px 28px;
+    background: rgba(255, 255, 255, 0.35);
+    border-radius: 20px;
+    border: 2px solid rgba(0, 168, 204, 0.15);
+    flex-shrink: 0;
+}
+.item-name {
+    font-size: 32px;
+    color: #1a1a3e;
+}
+.item-count {
+    font-size: 34px;
+    font-weight: bold;
+    color: #7a5a00;
+}
+
+/* 右下：动漫语录 */
+.anime-quote {
+    flex-shrink: 0;
+    padding: 30px 40px;
+    background: rgba(255, 255, 255, 0.3);
+    backdrop-filter: blur(16px) saturate(150%);
+    -webkit-backdrop-filter: blur(16px) saturate(150%);
+    border-radius: 24px;
+    border: 2px solid rgba(255, 183, 197, 0.3);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-height: 0;
+}
+.quote-icon {
+    font-size: 28px;
+    color: #3a3a6e;
+    margin-bottom: 10px;
+    text-align: center;
+}
+.quote-text {
+    font-size: 26px;
+    color: #2a2a4e;
+    line-height: 1.6;
+    text-align: center;
+    font-style: italic;
+    word-break: break-word;
+}
+.quote-source {
+    font-size: 22px;
+    color: #4a4a6e;
+    text-align: right;
+    margin-top: 12px;
+    font-style: normal;
+}
+
+/* 底部 */
+.footer {
+    text-align: center;
+    margin-top: 30px;
+    color: #1a1a3e;
+    font-size: 26px;
+    letter-spacing: 4px;
+    flex-shrink: 0;
+}
+</style>
+</head>
+<body>
+<div class="bg-layer"></div>
+<div class="overlay"></div>
+<div class="content">
+    <div class="header">
+        <div class="header-title">👤 个人资料</div>
+    </div>
+
+    <div class="main-body">
+        <!-- 左侧栏 — 宽松 -->
+        <div class="left-panel">
+            <div class="avatar-box">
+                {avatar_html}
+            </div>
+            <div class="user-info-text">
+                <div class="user-name">{nickname}</div>
+                <div class="user-id">QQ {user_id}</div>
+                <div class="user-uid">UID {uid}</div>
+            </div>
+            <div class="left-stats">
+                <div class="left-stat-item">
+                    <div class="left-stat-value">{favor}</div>
+                    <div class="left-stat-label">好感</div>
+                </div>
+                <div class="left-stat-item">
+                    <div class="left-stat-value">{coins}</div>
+                    <div class="left-stat-label">金币</div>
+                </div>
+            </div>
+            <div class="left-stats-row2">
+                <div class="left-stat-item">
+                    <div class="left-stat-value">{total_days}</div>
+                    <div class="left-stat-label">签到天数</div>
+                </div>
+                <div class="left-stat-item">
+                    <div class="left-stat-value">{message_count}</div>
+                    <div class="left-stat-label">消息数</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 右侧栏 -->
+        <div class="right-panel">
+            <!-- 右上：最常用3个插件 -->
+            <div class="top-freq-plugins">
+                {top_freq_plugins_html}
+            </div>
+
+            <!-- 右中：背包 -->
+            <div class="backpack-box">
+                <div class="backpack-title">背包</div>
+                <div class="backpack-content">
+                    <div class="item-row">
+                        <div class="item-name">双倍好感卡</div>
+                        <div class="item-count">× {double_favor_card_count}</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 右下：动漫语录 -->
+            <div class="anime-quote">
+                <div class="quote-icon">💬</div>
+                <div class="quote-text">{anime_quote}</div>
+                <div class="quote-source">—— {anime_source}</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="footer">MikuBot · 与你同在</div>
+</div>
+</body>
+</html>

@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>群组列表 - MikuBot 管理后台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/style.css">
+<script src="/js/theme.js"></script>
+<style>
+body{font-family:"Noto Sans SC",sans-serif;background:linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 50%, var(--theme-glow) 100%);color:var(--text-primary);}
+.main{min-height:100vh;padding:28px 32px;margin-left:240px;}
+.page-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:12px;}
+.page-title{font-size:22px;font-weight:700;margin-bottom:8px;color:var(--text-primary);}
+.page-hint{color:var(--text-secondary);font-size:13px;margin-bottom:0;}
+
+.search-bar{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;}
+.search-input{flex:1;min-width:200px;padding:10px 14px;background:rgba(255,255,255,0.7);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border:1px solid var(--border-color);border-radius:var(--radius-sm);color:var(--text-primary);font-size:14px;outline:none;}
+.search-input:focus{border-color:var(--theme-primary);box-shadow:0 0 0 3px var(--theme-glow);}
+.btn{padding:10px 18px;background:linear-gradient(135deg,#2BA89E,#3A6E8E);border:none;border-radius:var(--radius-sm);color:#fff;font-size:14px;font-weight:600;cursor:pointer;transition:0.2s;}
+.btn:hover{transform:translateY(-1px);box-shadow:0 8px 20px var(--theme-glow);}
+.btn-sec{background:rgba(255,255,255,0.7);border:1px solid var(--border-color);color:var(--text-secondary);backdrop-filter:blur(10px) saturate(180%);-webkit-backdrop-filter:blur(10px) saturate(180%);box-shadow:inset 0 1px 0 rgba(255,255,255,0.6);}
+.btn-sm{padding:8px 14px;font-size:13px;}
+
+.group-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;}
+.group-card{background:rgba(255,255,255,0.7);backdrop-filter:blur(18px) saturate(180%);-webkit-backdrop-filter:blur(18px) saturate(180%);border:1px solid var(--border-color);border-radius:var(--radius-sm);padding:16px;box-shadow:inset 0 1px 0 rgba(255,255,255,0.6),0 6px 18px rgba(31,58,74,0.08);transition:0.2s;}
+.group-card:hover{transform:translateY(-2px);box-shadow:0 10px 24px rgba(31,58,74,0.12);}
+.group-avatar{width:48px;height:48px;border-radius:12px;background:linear-gradient(135deg,var(--theme-glow),var(--theme-primary));display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:18px;margin-bottom:12px;object-fit:cover;}
+.group-name{font-size:15px;font-weight:600;color:var(--text-primary);margin-bottom:4px;word-break:break-all;}
+.group-id{font-size:12px;color:var(--text-muted);font-family:"JetBrains Mono",monospace;margin-bottom:8px;}
+.group-info{display:flex;justify-content:space-between;font-size:12px;color:var(--text-secondary);}
+.group-info span{display:flex;align-items:center;gap:4px;}
+
+.empty-panel{background:var(--bg-hover);border:1px dashed var(--border-color);border-radius:var(--radius-sm);padding:40px;text-align:center;color:var(--text-secondary);font-size:14px;}
+
+.stats-bar{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px;}
+.stat-card{background:rgba(255,255,255,0.7);backdrop-filter:blur(18px) saturate(180%);-webkit-backdrop-filter:blur(18px) saturate(180%);border:1px solid var(--border-color);border-radius:var(--radius-sm);padding:16px;text-align:center;box-shadow:inset 0 1px 0 rgba(255,255,255,0.6);}
+.stat-value{font-size:24px;font-weight:700;background:var(--gradient);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;}
+.stat-label{font-size:12px;color:var(--text-secondary);margin-top:4px;}
+
+@media (max-width: 768px) {
+    .main{margin-left:0;padding:72px 14px 20px 14px;}
+    .page-title{font-size:18px;text-align:center;}
+    .page-hint{font-size:12px;text-align:center;margin-bottom:16px;}
+    .group-grid{grid-template-columns:1fr;gap:10px;}
+    .stats-bar{grid-template-columns:repeat(2,1fr);gap:8px;}
+    .stat-value{font-size:20px;}
+}
+</style>
+</head>
+<body>
+<div id="sidebar"></div>
+<div class="main">
+    <div class="page-header">
+        <div>
+            <h1 class="page-title">群组列表</h1>
+            <p class="page-hint">查看 Bot 所在的所有群组信息。</p>
+        </div>
+        <div id="theme-container"></div>
+    </div>
+
+    <div class="stats-bar" id="stats-bar"></div>
+
+    <div class="search-bar">
+        <input type="text" id="search-input" class="search-input" placeholder="搜索群组名称或 ID..." oninput="filterGroups()">
+        <button class="btn btn-sec" onclick="loadGroups()">刷新</button>
+    </div>
+
+    <div id="group-list"></div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/app.js"></script>
+<script>
+var allGroups = [];
+
+async function loadGroups() {
+    try {
+        var data = await window.api.groups.list();
+        allGroups = data.groups || data.list || [];
+        renderStats();
+        filterGroups();
+    } catch (e) {
+        document.getElementById("group-list").innerHTML = '<div class="empty-panel">加载失败: ' + e.message + '</div>';
+    }
+}
+
+function renderStats() {
+    var total = allGroups.length;
+    var totalMessages = 0;
+    for (var i = 0; i < allGroups.length; i++) {
+        totalMessages += allGroups[i].message_count || 0;
+    }
+    var statsBar = document.getElementById("stats-bar");
+    statsBar.innerHTML =
+        '<div class="stat-card"><div class="stat-value">' + total + '</div><div class="stat-label">群组总数</div></div>' +
+        '<div class="stat-card"><div class="stat-value">' + totalMessages + '</div><div class="stat-label">总消息数</div></div>';
+}
+
+function filterGroups() {
+    var keyword = document.getElementById("search-input").value.toLowerCase().trim();
+    var list = allGroups;
+    
+    if (keyword) {
+        list = allGroups.filter(function(g) {
+            var name = (g.name || g.group_name || "").toLowerCase();
+            var id = String(g.id || g.group_id || "");
+            return name.indexOf(keyword) >= 0 || id.indexOf(keyword) >= 0;
+        });
+    }
+    
+    renderGroups(list);
+}
+
+function renderGroups(list) {
+    var container = document.getElementById("group-list");
+    
+    if (!list || list.length === 0) {
+        container.innerHTML = '<div class="empty-panel">没有找到匹配的群组</div>';
+        return;
+    }
+    
+    var html = '<div class="group-grid">';
+    
+    for (var i = 0; i < list.length; i++) {
+        var g = list[i];
+        var name = g.name || g.group_name || "未知群组";
+        var id = g.id || g.group_id || "-";
+        var memberCount = g.member_count || g.members || 0;
+        var avatar = g.avatar || "";
+        var avatarText = name.charAt(0).toUpperCase();
+        
+        var avatarHtml = '';
+        if (avatar) {
+            avatarHtml = '<img class="group-avatar" src="' + avatar + '" alt="' + name + '">';
+        } else {
+            avatarHtml = '<div class="group-avatar">' + avatarText + '</div>';
+        }
+        
+        html += '<div class="group-card">' +
+            avatarHtml +
+            '<div class="group-name">' + name + '</div>' +
+            '<div class="group-id">' + id + '</div>' +
+            '<div class="group-info">' +
+                '<span>👥 ' + memberCount + ' 人</span>' +
+                '<span>💬 ' + (g.message_count || 0) + ' 条</span>' +
+            '</div>' +
+        '</div>';
+    }
+    
+    html += '</div>';
+    container.innerHTML = html;
+}
+
+if (window.ThemeManager) window.ThemeManager.render("#theme-container");
+renderSidebar("groups");
+requireAuth().then(function(ok){ if (ok) loadGroups(); });
+</script>
+</body>
+</html>

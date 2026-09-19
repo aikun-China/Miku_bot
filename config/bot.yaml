@@ -1,0 +1,233 @@
+miku_menu:
+  enabled: true
+  response_style: card
+  card_width: 1080
+  card_height: 1500
+  show_icons: true
+miku_checkin:
+  enabled: true
+  response_style: card
+  coins_min: 1
+  coins_max: 20
+  favor_min: 0.1
+  favor_max: 1.0
+  double_favor_prob: 0.03
+  card_width: 720
+  card_height: 1150
+miku_stats:
+  enabled: true
+  top_count: 10
+miku_basic:
+  enabled: true
+  bot_name: MikuBot
+  show_system_info: true
+  response_style: card
+miku_pai:
+  enabled: true
+  pai_dead_times: 5
+  pai_interval: 0.5
+  need_at: false
+  cooldown: 3
+miku_music:
+  enabled: true
+  similarity_threshold: 65
+  similarity_crosscheck_threshold: 75
+  max_results: 5
+  send_info: true
+  max_file_size_mb: 30
+  enable_ncm: true
+  ncm_quality: exhigh
+  ncm_search_limit: 5
+  ncm_cookie: ''
+miku_blacklist:
+  enabled: true
+miku_chat_history:
+  enabled: true
+  max_messages_per_file: 500
+miku_poke:
+  enabled: true
+  response_style: text
+miku_broadcast:
+  enabled: true
+  cooldown_seconds: 60
+  prefix_enabled: true
+  prefix_text: 📢 Miku通知
+  admin_commands: 广播
+miku_profile:
+  enabled: true
+  response_style: card
+  card_width: 720
+miku_notify_admin:
+  enabled: true
+  quote_style: true
+  forward_images: true
+miku_shop:
+  enabled: true
+  response_style: card
+  card_width: 658
+  card_height: 987
+miku_admin:
+  enabled: true
+  notify_on_start: true
+  admin_commands:
+  - 重启
+  - 配置检查
+  - 刷新配置
+  - 检查更新
+  - 立即更新
+miku_friend_request:
+  enabled: true
+  auto_dnd: true
+  expire_hours: 48
+  admin_commands:
+  - 请求列表
+  - 同意
+  - 拒绝
+miku_send_like:
+  enabled: true
+  like_rounds: 5
+  like_times_per_round: 10
+  daily_limit: 1
+  admin_commands:
+  - 点赞信息
+miku_weather:
+  API_KEY: ''
+  DEFAULT_CITY: 北京
+  API_HOST: devapi.qweather.com
+  GEO_API_HOST: ''
+  lang: zh
+  response_style: card
+miku_group_notice:
+  enabled: true
+  use_image: false
+  admin_commands:
+  - 进群欢迎设置
+  - 违禁词添加
+  - 违禁词删除
+  - 违禁词列表
+  - 违禁词开关
+  - 违禁词处理
+  - 禁言
+  - 解禁
+  - 踢人
+  - 撤回
+  - 群助手审批
+  - 群助手审批开关
+cache_cleanup:
+  enabled: true
+  cleanup_times:
+  - 08:00
+  cache_dirs:
+  - data/screenshots
+  - data/images
+  max_age_hours: 0
+  file_extensions:
+  - .png
+  - .jpg
+  - .jpeg
+  verbose: true
+bot:
+  enabled: true
+  superusers: 123456789
+  webui_password: miku8888
+  log_level: INFO
+  log_to_file: true
+  log_rotation: 1 day
+  log_retention: 30 days
+  nickname: '- miku   - 初音   - Miku   - 初音未来'
+  host: 0.0.0.0
+  port: 3108
+miku_ai:
+  enabled: true
+  response_style: text
+  api_mode: cloud
+  cloud_api_key: ''
+  cloud_base_url: https://open.bigmodel.cn/api/paas/v4
+  cloud_model: glm-4.6v
+  cloud_text_model: glm-4.5-air
+  text_max_tokens: 2048
+  group_reply_on_mention: true
+  private_reply_every: true
+  group_history_max: 1000
+  private_history_max: 500
+  personality_file: plugins/miku_ai/personality.txt
+  personality_reload: false
+  request_timeout: 120
+  vision_enabled: true
+  local_base_url: http://localhost:11434/v1
+  local_model: qwen2.5:7b
+  local_api_key: ''
+  group_context_max: 25
+  private_context_max: 30
+  max_context_chars: 8000
+  max_user_msg_chars: 1000
+  max_quoted_chars: 300
+  group_max_queue: 3
+  private_max_queue: 5
+  history_file: data/ai_chat_history.json
+  favor_change_probability: 10
+  favor_increase_min: 0.05
+  favor_increase_max: 0.3
+  favor_decrease_min: 0.02
+  favor_decrease_max: 0.15
+  show_favor_change: true
+  favor_affect_reply: true
+  special_users: ''
+  temperature: 1.0
+  max_tokens: 2000
+  card_width: 600
+  card_height: 0
+  emoji_hash_window_hours: 24
+  emoji_skip_size_kb: 20
+  emoji_skip_dimension: 200
+  emoji_gif_skip_size_kb: 50
+  emoji_spam_max_count: 3
+  emoji_spam_window_seconds: 60
+  emoji_library_path: data/emoji_library.db
+  emoji_auto_cleanup: true
+  emoji_cleanup_days: 90
+  image_url_default_ttl_days: 7
+  image_expiry_use_description: true
+  vision_concurrency: 2
+  vision_prompt_template: 分析这张图片，按JSON返回：{"is_emoji":true/false,"ocr_text":"图上文字","character":"角色名","emotion_tag":"嘲讽/震惊/可爱/无语/悲伤/兴奋/其他","description":"一句话描述","tags":["标签1","标签2"]}
+  nicknames: 初音,Miku,初音未来
+  stream: false
+  cooldown_after_reply_ms: 5000
+  planner_enabled: false
+  debug: false
+  enable_typing_delay: false
+  typing_delay_max_total_ms: 10000
+  enable_markdown_screenshot: false
+  max_iterations: 5
+  output_length_constraint_strength: medium
+  tool_call_constraint_strength: medium
+  emoji_usage_constraint_strength: medium
+  audio_usage_constraint_strength: medium
+  markdown_usage_constraint_strength: medium
+  emotion_default: default
+  emotion_update_interval_ms: 3600000
+  reply_style_base: ''
+  reply_style_multiple: ''
+  reply_style_multiple_probability: 0.2
+  planner_idle_threshold_ms: 1800000
+  planner_idle_message_count: 100
+  emoji_characters: ''
+  emoji_stickers: ''
+  expression_enabled: false
+  expression_learn_after_messages: 100
+  expression_sample_size: 3
+  memory_enabled: true
+  memory_group_history_limit: 800
+  memory_user_history_limit: 100
+  topic_enabled: true
+  sensitive_filter_enabled: true
+  sensitive_words_extra: ''
+  sensitive_replies:
+  - 呜...这种话Miku不喜欢...
+  - 哎呀，不要说这种奇怪的话啦～
+  - Miku假装没听见！换个别的话题吧～
+  - 哼，Miku才不想理你呢...
+  - 这种话题不太好哦，我们说点别的吧！
+  ai_content_filter: false
+  topic_window_hours: 5
+  topic_history_window_count: 3

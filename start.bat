@@ -1,57 +1,54 @@
 @echo off
-chcp 936 >nul
+chcp 65001 >nul
 cd /d "%~dp0"
+title MikuBot
 
 echo =========================================
-echo MikuBot 启动
+echo   MikuBot Starting...
 echo =========================================
 
-REM 1. 检查 .venv
+REM 1. Check virtual environment
 if not exist ".venv\Scripts\python.exe" (
-    echo [ERROR] 虚拟环境不存在！
-    echo [INFO] 请先用系统 Python 创建虚拟环境:
-    echo     python -m venv .venv
+    echo [ERROR] Virtual environment not found
+    echo Please run: python -m venv .venv
     pause
     exit /b 1
 )
-echo [OK] 虚拟环境已存在
+echo [OK] Virtual environment found
 
-REM 2. 检测依赖
+REM 2. Check dependencies
 echo.
 ".venv\Scripts\python.exe" -c "import nonebot" >nul 2>nul
 if errorlevel 1 (
-    echo [INFO] 依赖缺失，正在安装...
+    echo [INFO] Dependencies not found, installing...
     ".venv\Scripts\python.exe" -m pip install -r requirements.txt
     if errorlevel 1 (
-        echo [ERROR] 依赖安装失败
+        echo [ERROR] Dependency installation failed
         pause
         exit /b 1
     )
-    echo [OK] 依赖安装完成
+    echo [OK] Dependencies installed
 ) else (
-    echo [OK] 依赖已安装
+    echo [OK] Dependencies ready
 )
 
-REM 3. 检测 Edge 浏览器
-echo.
-if exist "C:\Program Files\Microsoft\Edge\Application\msedge.exe" (
-    echo [OK] Edge 浏览器已安装
-) else if exist "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" (
-    echo [OK] Edge 浏览器已安装
-) else (
-    echo [WARN] 未检测到 Edge 浏览器
-    echo [INFO] 截图功能需要 Edge，请安装: https://www.microsoft.com/edge
-)
-
-REM 4. 启动 Bot
+REM 3. Start Bot
 echo.
 echo =========================================
-echo 启动 MikuBot...
+echo   Starting MikuBot...
 echo =========================================
 echo.
 
 ".venv\Scripts\python.exe" bot.py
 
+if errorlevel 1 (
+    echo.
+    echo =========================================
+    echo   [ERROR] Bot exited with code: %errorlevel%
+    echo =========================================
+) else (
+    echo.
+    echo [INFO] Bot exited normally
+)
 echo.
-echo [INFO] Bot 已退出
 pause

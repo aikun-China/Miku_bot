@@ -55,6 +55,8 @@ def get_python_deps() -> dict:
                 "pyyaml": "yaml",
                 "APScheduler": "apscheduler",
                 "apscheduler": "apscheduler",
+                "Pillow": "PIL",
+                "pillow": "PIL",
             }
             import_name = special_mapping.get(import_name, import_name)
             

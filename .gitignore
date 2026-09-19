@@ -1,0 +1,81 @@
+# =====================================
+# Python / VirtualEnv
+# =====================================
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# __pycache__ / 字节码
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# 类型检查缓存
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# =====================================
+# IDE / Editor
+# =====================================
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*.iml
+
+# =====================================
+# MikuBot 运行时产物（不要提交）
+# =====================================
+# 日志
+logs/
+*.log
+
+# 用户数据 / 签到
+data/users/
+data/images/
+data/screenshots/
+data/cache/
+data/
+# 但保留 utils/templates 里的模板资源
+# （utils/templates 是源码的一部分，会被提交）
+
+# 浏览器驱动与缓存
+chrome-win64.zip
+chromium/
+chrome/
+.playwright_cache/
+playwright/
+
+# 首次运行标记
+config/.first_run
+
+# =====================================
+# 环境变量 / 私密配置
+# =====================================
+.env.local
+.env.*.local
+
+# =====================================
+# 系统 / 其他
+# =====================================
+.DS_Store
+Thumbs.db
+desktop.ini
+*.bak
+*.tmp
+*.old
+
+# 临时的测试脚本
+_test_*.py
+_test_*.ps1

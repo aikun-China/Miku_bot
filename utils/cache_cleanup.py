@@ -62,11 +62,29 @@ _cfg = config_manager.register_plugin(
     description="缓存图片自动清理配置",
 )
 
+def _normalize_list(value, default):
+    """
+    将配置值规范化为 list。
+    - 已是 list/tuple：直接转 list 返回
+    - 字符串：按逗号分割（兼容 "00:00" 单值或 "00:00, 06:00" 多值）
+    - None/其它：返回 default
+    防止 YAML 误把单个值写成字符串时被 list(str) 拆成字符序列。
+    """
+    if value is None:
+        return list(default)
+    if isinstance(value, (list, tuple)):
+        return [v for v in value]
+    if isinstance(value, str):
+        parts = [p.strip() for p in value.split(",")]
+        return [p for p in parts if p]
+    return list(default)
+
+
 ENABLED = bool(_cfg.get("enabled", True))
-CLEANUP_TIMES = list(_cfg.get("cleanup_times") or ["00:00"])
-CACHE_DIRS = list(_cfg.get("cache_dirs") or ["data/screenshots"])
+CLEANUP_TIMES = _normalize_list(_cfg.get("cleanup_times"), ["00:00"])
+CACHE_DIRS = _normalize_list(_cfg.get("cache_dirs"), ["data/screenshots"])
 MAX_AGE_HOURS = int(_cfg.get("max_age_hours", 0) or 0)
-FILE_EXTENSIONS = list(_cfg.get("file_extensions") or [".png"])
+FILE_EXTENSIONS = _normalize_list(_cfg.get("file_extensions"), [".png"])
 VERBOSE = bool(_cfg.get("verbose", True))
 
 
@@ -178,6 +196,7 @@ def start_cleanup(driver=None) -> None:
         start_cleanup(nonebot.get_driver())
 
     如果 APScheduler 未安装，会打印一条警告但不阻止 Bot 启动。
+    使用 driver 的 bot_connect 事件延迟启动，确保事件循环已运行。
     """
     global _scheduler
 
@@ -215,36 +234,43 @@ def start_cleanup(driver=None) -> None:
         )
         return
 
-    if _scheduler is not None and _scheduler.running:
-        logger.warning("[cache_cleanup] scheduler 已在运行，不重复启动")
-        return
+    def _do_start():
+        """实际启动 scheduler（在事件循环运行后调用）"""
+        global _scheduler
+        if _scheduler is not None and _scheduler.running:
+            logger.warning("[cache_cleanup] scheduler 已在运行，不重复启动")
+            return
 
-    scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
-    for hour, minute in valid_times:
-        scheduler.add_job(
-            cleanup_cache,
-            trigger=CronTrigger(hour=hour, minute=minute),
-            id=f"cache_cleanup_{hour:02d}{minute:02d}",
-            name=f"缓存清理 {hour:02d}:{minute:02d}",
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=300,
+        scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
+        for hour, minute in valid_times:
+            scheduler.add_job(
+                cleanup_cache,
+                trigger=CronTrigger(hour=hour, minute=minute),
+                id=f"cache_cleanup_{hour:02d}{minute:02d}",
+                name=f"缓存清理 {hour:02d}:{minute:02d}",
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=300,
+            )
+
+        scheduler.start()
+        _scheduler = scheduler
+
+        # 信息打印
+        time_strs = [f"{h:02d}:{m:02d}" for h, m in sorted(valid_times)]
+        logger.info(
+            f"[cache_cleanup] 缓存清理已启动，每日时间: {', '.join(time_strs)}；"
+            f"目录: {', '.join(valid_dirs)}；"
+            f"扩展名: {', '.join(FILE_EXTENSIONS)}；"
+            f"最大保留: {'不限制' if MAX_AGE_HOURS <= 0 else f'{MAX_AGE_HOURS} 小时'}"
         )
 
-    scheduler.start()
-    _scheduler = scheduler
-
-    # 信息打印
-    time_strs = [f"{h:02d}:{m:02d}" for h, m in sorted(valid_times)]
-    logger.info(
-        f"[cache_cleanup] 缓存清理已启动，每日时间: {', '.join(time_strs)}；"
-        f"目录: {', '.join(valid_dirs)}；"
-        f"扩展名: {', '.join(FILE_EXTENSIONS)}；"
-        f"最大保留: {'不限制' if MAX_AGE_HOURS <= 0 else f'{MAX_AGE_HOURS} 小时'}"
-    )
-
-    # 如果传入了 driver，注册为 Bot 生命周期事件（可选）
+    # 如果传入了 driver，在 bot 连接后启动（确保事件循环已运行）
     if driver is not None:
+        @driver.on_bot_connect
+        async def _on_bot_connect(bot):
+            _do_start()
+
         @driver.on_shutdown
         async def _on_shutdown():
             global _scheduler
@@ -255,6 +281,9 @@ def start_cleanup(driver=None) -> None:
                 except Exception:
                     pass
                 _scheduler = None
+    else:
+        # 没有 driver 时尝试直接启动（可能失败，调用者需捕获异常）
+        _do_start()
 
 
 def stop_cleanup() -> None:
