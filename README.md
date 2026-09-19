@@ -65,26 +65,54 @@ miku_bot/
 
 ---
 
-## 快速启动
+## 部署教程
 
-### 前提
+### 环境要求
 
-- 系统已安装 **Microsoft Edge**（Windows 10/11 默认已安装）
-- 系统已安装 **Python 3.10+**
+| 依赖 | 要求 | 说明 |
+|------|------|------|
+| Python | 3.10+ | [官网下载](https://www.python.org/downloads/)，安装时勾选 **Add Python to PATH** |
+| Microsoft Edge | 最新版 | Windows 10/11 默认自带，截图渲染用，无需下载 Chromium |
+| QQ 协议端 | NapCat / LLOneBot / Lagrange | 任选其一，负责 QQ 消息收发 |
 
-### 方式一：双击 start.bat（Windows）
+### 第 1 步：获取项目代码
 
+```bash
+git clone https://github.com/aikun-China/Miku_bot.git
+cd Miku_bot
 ```
-D:\qqbot\miku_bot\start.bat
+
+> 也可以在 GitHub 仓库页面点击 **Code → Download ZIP** 下载后解压。
+
+### 第 2 步：创建虚拟环境
+
+在项目根目录打开终端执行：
+
+```bash
+python -m venv .venv
+```
+
+### 第 3 步：启动 Bot
+
+**Windows**：双击 `start.bat`
+
+**Linux / Mac / Git Bash**：
+
+```bash
+bash start.sh
 ```
 
 脚本自动完成：
 1. 检测 `.venv` 虚拟环境
 2. 检测依赖（缺失则自动 `pip install`）
-3. 检测 Edge 浏览器
+3. 检测 Edge 浏览器（Linux/Mac）
 4. 启动 Bot
 
-首次启动会弹出配置向导：
+> 也可手动启动：`.venv\Scripts\python.exe bot.py`（Windows）或 `.venv/bin/python bot.py`（Linux/Mac）
+
+### 第 4 步：首次配置向导
+
+首次启动会进入交互式向导：
 
 ```
 ==================================================
@@ -100,17 +128,52 @@ D:\qqbot\miku_bot\start.bat
   [OK] WebUI 密码已设置
 ```
 
-### 方式二：命令行启动
+配置会自动写入 `.env`，之后可随时手动修改：
+
+| 配置项 | 说明 |
+|--------|------|
+| `SUPERUSERS` | 管理员 QQ 号，拥有管理指令权限 |
+| `WEBUI_PASSWORD` | WebUI 管理面板登录密码 |
+| `PORT` | 服务监听端口，默认 `3108` |
+
+### 第 5 步：配置 QQ 协议端
+
+以 **NapCat** 为例，在网络配置中添加一条 **反向 WebSocket** 连接：
+
+```
+ws://127.0.0.1:3108/onebot/v11/ws
+```
+
+- 端口 `3108` 对应 `.env` 中的 `PORT`，若修改过需保持一致
+- LLOneBot / Lagrange 同样在设置中配置反向 WebSocket 地址即可
+
+### 第 6 步：验证部署
+
+协议端连接成功后，私聊 Bot（或在群里 @Bot）发送：
+
+```
+菜单
+```
+
+能收到功能菜单卡片即部署成功。发送 `状态` 可查看运行信息。
+
+### 常见问题
+
+**启动提示 Virtual environment not found**
+
+未创建虚拟环境，请先执行第 2 步：`python -m venv .venv`
+
+**依赖安装缓慢或失败**
+
+换用国内镜像安装：
 
 ```bash
-# Windows cmd
-cd D:\qqbot\miku_bot
-.venv\Scripts\python.exe bot.py
-
-# Git Bash
-cd /d/qqbot/miku_bot
-bash start.sh
+.venv\Scripts\python.exe -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
+
+**协议端连接不上**
+
+确认 Bot 已启动、端口一致、地址为 `ws://127.0.0.1:3108/onebot/v11/ws`，并检查防火墙是否拦截。
 
 ---
 
@@ -229,16 +292,6 @@ Bot 启动时自动替换 NoneBot 默认日志为自定义格式：
 
 ---
 
-## 连接 QQ
-
-在协议端（NapCat / LLOneBot / Lagrange）配置反向 WebSocket：
-
-```
-ws://127.0.0.1:3108/onebot/v11/ws
-```
-
----
-
 ## 版本管理与自动更新
 
 ### 检查更新
@@ -323,12 +376,3 @@ Bot 自动下载最新代码并重启：
 2. 双击 `start.bat` 即可自动检测并启动
 3. 首次启动会弹出交互式配置向导
 4. 截图使用系统 Edge，无需额外下载浏览器
-
----
-
-## 开发计划
-
-- [ ] 插件索引市场（plugins_index 扩展）
-- [ ] 接入 AI 对话，渲染对话卡片
-- [ ] 数据库 + 签到/好感度系统
-- [ ] WebUI 管理面板（密码登录）
