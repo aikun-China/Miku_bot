@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    width: 600px;
+    font-family: "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    background: linear-gradient(135deg, #39c5bb 0%, #f8b8d1 100%);
+    min-height: 500px;
+    position: relative;
+    overflow: hidden;
+}
+body::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+        radial-gradient(circle at 20% 20%, rgba(255, 255, 255, 0.15) 0%, transparent 40%),
+        radial-gradient(circle at 80% 80%, rgba(255, 255, 255, 0.1) 0%, transparent 40%);
+    z-index: 0;
+}
+
+/* 内容容器 */
+.content {
+    position: relative;
+    z-index: 2;
+    padding: 30px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+/* 标题栏 */
+.header {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 10px 20px;
+}
+.header-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.header-icon {
+    font-size: 28px;
+    filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.2));
+}
+.header-title {
+    font-size: 22px;
+    font-weight: bold;
+    color: #ffffff;
+    text-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+    letter-spacing: 2px;
+}
+.header-bvid {
+    font-size: 13px;
+    color: rgba(255, 255, 255, 0.8);
+    background: rgba(255, 255, 255, 0.2);
+    padding: 4px 12px;
+    border-radius: 12px;
+    letter-spacing: 1px;
+}
+
+/* 主卡片（毛玻璃） */
+.card {
+    width: 100%;
+    background: rgba(255, 255, 255, 0.6);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    border-radius: 20px;
+    border: 1.5px solid rgba(255, 255, 255, 0.7);
+    box-shadow: 0 10px 40px rgba(57, 197, 187, 0.35);
+    overflow: hidden;
+}
+
+/* 封面图 */
+.cover-wrap {
+    position: relative;
+    width: 100%;
+    height: 280px;
+    background: linear-gradient(135deg, #e8f8f7 0%, #fde8f0 100%);
+    overflow: hidden;
+}
+.cover-wrap img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+.cover-placeholder {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 60px;
+    color: rgba(57, 197, 187, 0.4);
+}
+.duration-badge {
+    position: absolute;
+    bottom: 10px;
+    right: 10px;
+    background: rgba(0, 0, 0, 0.65);
+    color: #fff;
+    padding: 3px 10px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: bold;
+    letter-spacing: 1px;
+}
+
+/* 视频信息区 */
+.info-section {
+    padding: 20px 22px;
+}
+
+/* 标题 */
+.video-title {
+    font-size: 18px;
+    font-weight: bold;
+    color: #2c5c59;
+    line-height: 1.5;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    min-height: 52px;
+}
+
+/* UP主信息 */
+.up-info {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 14px;
+    padding-bottom: 14px;
+    border-bottom: 1px dashed rgba(57, 197, 187, 0.3);
+}
+.up-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #39c5bb, #f8b8d1);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-size: 16px;
+    font-weight: bold;
+    flex-shrink: 0;
+}
+.up-name {
+    font-size: 15px;
+    color: #3c8a86;
+    font-weight: 500;
+    flex: 1;
+}
+.up-tag {
+    font-size: 11px;
+    color: #39c5bb;
+    background: rgba(57, 197, 187, 0.12);
+    padding: 2px 8px;
+    border-radius: 8px;
+}
+
+/* 数据统计栏 */
+.stats-row {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 16px;
+    gap: 8px;
+}
+.stat-item {
+    flex: 1;
+    text-align: center;
+    padding: 10px 6px;
+    background: linear-gradient(135deg, rgba(224, 255, 252, 0.5) 0%, rgba(255, 230, 240, 0.5) 100%);
+    border-radius: 12px;
+}
+.stat-value {
+    font-size: 17px;
+    font-weight: bold;
+    color: #2c7a76;
+}
+.stat-label {
+    font-size: 11px;
+    color: #5aaa9a;
+    margin-top: 3px;
+    letter-spacing: 1px;
+}
+
+/* 第二行数据 */
+.stats-row-2 {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 10px;
+    gap: 8px;
+}
+
+/* 简介 */
+.desc-box {
+    margin-top: 16px;
+    padding: 12px 14px;
+    background: rgba(255, 255, 255, 0.4);
+    border-radius: 12px;
+    font-size: 13px;
+    color: #4a7c78;
+    line-height: 1.6;
+    max-height: 60px;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+}
+
+/* 底部 */
+.footer {
+    margin-top: 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 4px;
+}
+.footer-date {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.85);
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+    letter-spacing: 1px;
+}
+.footer-brand {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.75);
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+    letter-spacing: 2px;
+}
+</style>
+</head>
+<body>
+<div class="content">
+    <div class="header">
+        <div class="header-left">
+            <div class="header-icon">📺</div>
+            <div class="header-title">BILIBILI 解析</div>
+        </div>
+        <div class="header-bvid">{bvid}</div>
+    </div>
+
+    <div class="card">
+        <div class="cover-wrap">
+            {cover_html}
+            <div class="duration-badge">⏱ {duration}</div>
+        </div>
+
+        <div class="info-section">
+            <div class="video-title">{title}</div>
+
+            <div class="up-info">
+                <div class="up-avatar">{up_avatar_text}</div>
+                <div class="up-name">{owner}</div>
+                <div class="up-tag">UP主</div>
+            </div>
+
+            <div class="stats-row">
+                <div class="stat-item">
+                    <div class="stat-value">{view}</div>
+                    <div class="stat-label">▶ 播放</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">{like}</div>
+                    <div class="stat-label">👍 点赞</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">{coin}</div>
+                    <div class="stat-label">💰 投币</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">{favorite}</div>
+                    <div class="stat-label">⭐ 收藏</div>
+                </div>
+            </div>
+
+            <div class="stats-row-2">
+                <div class="stat-item">
+                    <div class="stat-value">{danmaku}</div>
+                    <div class="stat-label">💬 弹幕</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">{reply}</div>
+                    <div class="stat-label">💭 评论</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">{share}</div>
+                    <div class="stat-label">📤 分享</div>
+                </div>
+            </div>
+
+            {desc_html}
+        </div>
+    </div>
+
+    <div class="footer">
+        <div class="footer-date">📅 发布日期：{pubdate}</div>
+        <div class="footer-brand">MikuBot</div>
+    </div>
+</div>
+</body>
+</html>
