@@ -1,4 +1,4 @@
-"""
+﻿"""
 Miku B站插件 - 消息渲染模块
 构建视频/直播/番剧/用户/专栏的展示消息
 支持纯文本和图片卡片两种模式
@@ -274,7 +274,7 @@ async def render_video_card(info: VideoInfo) -> Optional[str]:
             desc_html=desc_html,
         )
 
-        img_path = await screenshot_html(html, width=600, height=1298)
+        img_path = await screenshot_html(html, width=600, height=800)
         return str(img_path)
     except Exception as e:
         logger.warning(f"[miku_bilibili] 视频卡片渲染失败: {e}")
