@@ -54,7 +54,7 @@ _TEMPLATE = (
     "  # GitHub 用户名（仓库所有者）\n"
     "  repo_owner: \"\"\n"
     "  # 备份仓库名称（不存在时自动创建为私有仓库）\n"
-    "  repo_name: \"mikubot备份\"\n"
+    "  repo_name: \"Mikubot-Backup\"\n"
     "  # 备份保留天数（超过此天数的备份自动清理）\n"
     "  retention_days: 30\n"
     "  # 每日自动备份时间（HH:MM 格式）\n"
@@ -69,7 +69,7 @@ _cfg = config_manager.register_plugin(
         "enabled": True,
         "token": "",
         "repo_owner": "",
-        "repo_name": "mikubot备份",
+        "repo_name": "Mikubot-Backup",
         "retention_days": 30,
         "backup_time": "00:00",
         "auto_create_repo": True,
@@ -150,7 +150,7 @@ def _sanitize_repo_name(name: str) -> str:
 
 
 def _get_repo_name() -> str:
-    return _sanitize_repo_name(str(_conf("repo_name", "mikubot备份") or "mikubot备份").strip())
+    return _sanitize_repo_name(str(_conf("repo_name", "Mikubot-Backup") or "Mikubot-Backup").strip())
 
 
 def _get_repo_full_name() -> str:
