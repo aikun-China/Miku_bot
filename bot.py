@@ -613,6 +613,20 @@ if __name__ == "__main__":
     except Exception as e:
         logger.warning(f"缓存清理任务初始化失败: {e}")
 
+    # ── 🔵 音乐过期清理（30天保留 + 无时间标注文件清理） ──
+    try:
+        from plugins.miku_music import start_music_cleanup
+        start_music_cleanup(driver)
+    except Exception as e:
+        logger.warning(f"音乐过期清理任务初始化失败: {e}")
+
+    # ── 🔵 GitHub 自动备份 ──
+    try:
+        from plugins.miku_github import start_github_backup
+        start_github_backup(driver)
+    except Exception as e:
+        logger.warning(f"GitHub备份任务初始化失败: {e}")
+
     # ── 🔵 数据库和缓存系统初始化 ──
     try:
         import asyncio

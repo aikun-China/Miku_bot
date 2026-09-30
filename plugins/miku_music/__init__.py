@@ -188,6 +188,12 @@ _TEMPLATE = (
     "  # 获取方式：浏览器登录music.163.com → F12 → Application → Cookies\n"
     "  # 复制 MUSIC_U 的值粘贴到这里\n"
     "  ncm_cookie: \"\"\n"
+    "  # 音频文件最大保留天数（超过此天数的缓存音频将被自动清理）\n"
+    "  max_retention_days: 30\n"
+    "  # 是否启用过期音频自动清理（启动时和每日8点各执行一次）\n"
+    "  enable_cleanup: true\n"
+    "  # 每日自动清理时间（HH:MM 格式）\n"
+    "  cleanup_time: \"08:00\"\n"
 )
 
 _cfg = config_manager.register_plugin(
@@ -203,6 +209,9 @@ _cfg = config_manager.register_plugin(
         "ncm_quality": "standard",
         "ncm_search_limit": 5,
         "ncm_cookie": "",
+        "max_retention_days": 30,
+        "enable_cleanup": True,
+        "cleanup_time": "08:00",
     },
     template_str=_TEMPLATE,
     description="点歌插件配置（本地+网易云）",
@@ -989,6 +998,10 @@ def _add_song_to_library(song_info: Dict):
     new_file = song_info.get("file", "")
     updated = False
 
+    # 记录下载时间（用于30天过期清理）
+    now_ts = time.time()
+    song_info.setdefault("download_time", now_ts)
+
     if ncm_id:
         for s in songs:
             if s.get("ncm_id") == ncm_id and (s.get("quality", "") == new_quality or not s.get("quality")):
@@ -1000,6 +1013,8 @@ def _add_song_to_library(song_info: Dict):
                 if song_info.get("album"):
                     s["album"] = song_info["album"]
                 s["quality"] = new_quality
+                # 重新下载则刷新下载时间
+                s["download_time"] = now_ts
                 # 保留 is_cover 标记
                 if song_info.get("is_cover"):
                     s["is_cover"] = True
@@ -1026,6 +1041,271 @@ def _add_song_to_library(song_info: Dict):
     q_label = QUALITY_LABELS.get(new_quality, new_quality) if new_quality else "未知"
     action = "已更新本地音乐库" if updated else "已添加到本地音乐库"
     logger.info(f"[点歌] {action}: {primary} ({q_label})")
+
+
+# ============================================================
+# 过期音频清理（30天保留 + 无时间标注文件清理）
+# ============================================================
+
+def _get_retention_days() -> int:
+    """获取音频最大保留天数（默认30天）"""
+    try:
+        v = int(_conf("max_retention_days", 30) or 30)
+        return v if v > 0 else 30
+    except Exception:
+        return 30
+
+
+def _remove_song_file(file_name: str) -> bool:
+    """删除音频文件及其对应的 .voice.wav 转码文件，返回是否成功删除了主文件"""
+    removed_main = False
+    if not file_name:
+        return removed_main
+    fp = MUSIC_DIR / file_name
+    try:
+        if fp.exists() and fp.is_file():
+            fp.unlink()
+            removed_main = True
+            logger.debug(f"[点歌] 已删除过期音频: {file_name}")
+    except Exception as e:
+        logger.warning(f"[点歌] 删除音频文件失败 {file_name}: {e}")
+
+    # 同时删除对应的语音转码文件 .voice.wav
+    voice_fp = fp.with_suffix(".voice.wav")
+    try:
+        if voice_fp.exists():
+            voice_fp.unlink()
+            logger.debug(f"[点歌] 已删除对应转码文件: {voice_fp.name}")
+    except Exception:
+        pass
+    return removed_main
+
+
+def _cleanup_expired_songs() -> dict:
+    """
+    清理过期音频文件和无时间标注文件。
+
+    规则：
+    1) songs.json 中有 download_time 且超过 max_retention_days 天 → 删除
+    2) songs.json 中无 download_time（无时间标注）→ 视为过期删除
+    3) MUSIC_DIR 中存在但不在 songs.json 中的孤立音频文件（无时间标注）→ 删除
+    4) 同步清理 songs.json 中已失效的记录
+    返回统计 dict: {removed_records, removed_orphans, errors}
+    """
+    stats = {"removed_records": 0, "removed_orphans": 0, "errors": 0}
+    if not _is_enabled():
+        return stats
+    enable_cleanup = str(_conf("enable_cleanup", True)).strip().lower() not in ("false", "0", "no", "")
+    if not enable_cleanup:
+        logger.info("[点歌] 过期清理已在配置中禁用")
+        return stats
+
+    retention_days = _get_retention_days()
+    now_ts = time.time()
+    cutoff_ts = now_ts - retention_days * 86400
+
+    # 加载歌曲列表（不走缓存，直接读文件保证最新）
+    if not SONGS_JSON.exists():
+        songs = []
+    else:
+        try:
+            data = json.loads(SONGS_JSON.read_text(encoding="utf-8"))
+            songs = data.get("songs", []) if isinstance(data, dict) else data
+            songs = [s for s in songs if isinstance(s, dict)]
+        except Exception as e:
+            logger.error(f"[点歌] 加载songs.json失败，跳过清理: {e}")
+            return stats
+
+    # 收集 songs.json 中登记的文件名（用于识别孤立文件）
+    registered_files = set()
+    for s in songs:
+        f = s.get("file")
+        if f:
+            registered_files.add(str(f))
+
+    new_songs = []
+    for s in songs:
+        file_name = s.get("file", "")
+        dl_time = s.get("download_time")
+
+        # 判断是否过期
+        expired = False
+        reason = ""
+        if dl_time is None:
+            # 无时间标注 → 视为过期
+            expired = True
+            reason = "无时间标注"
+        else:
+            try:
+                if float(dl_time) < cutoff_ts:
+                    expired = True
+                    age_days = (now_ts - float(dl_time)) / 86400
+                    reason = f"超过{retention_days}天（{age_days:.1f}天）"
+            except Exception:
+                expired = True
+                reason = "时间标注异常"
+
+        if expired:
+            _remove_song_file(file_name)
+            stats["removed_records"] += 1
+            names = s.get("names", []) or []
+            primary = str(names[0]) if names else file_name
+            logger.info(f"[点歌] 清理过期歌曲: {primary}（{reason}）")
+            continue
+
+        # 未过期：如果文件已不存在，也从songs.json移除（保持一致性）
+        fp = MUSIC_DIR / file_name if file_name else None
+        if file_name and (not fp or not fp.exists()):
+            logger.debug(f"[点歌] songs.json记录文件不存在，移除记录: {file_name}")
+            continue
+
+        new_songs.append(s)
+
+    # 保存清理后的 songs.json
+    if len(new_songs) != len(songs):
+        try:
+            SONGS_JSON.write_text(
+                json.dumps({"songs": new_songs}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            _invalidate_cache()
+        except Exception as e:
+            stats["errors"] += 1
+            logger.warning(f"[点歌] 保存songs.json失败: {e}")
+
+    # 清理孤立音频文件（不在 songs.json 中登记的音频文件，视为无时间标注）
+    try:
+        for item in MUSIC_DIR.iterdir():
+            if not item.is_file():
+                continue
+            if item.name == "songs.json":
+                continue
+            # .voice.wav 是转码产物，随主文件清理，这里跳过
+            if item.suffix == ".wav" and item.name.endswith(".voice.wav"):
+                continue
+            if item.suffix.lower() not in AUDIO_EXTENSIONS:
+                continue
+            if item.name in registered_files:
+                continue
+            # 孤立文件 → 删除
+            try:
+                item.unlink()
+                stats["removed_orphans"] += 1
+                logger.info(f"[点歌] 清理无时间标注孤立文件: {item.name}")
+                # 同时删除其 .voice.wav
+                voice_fp = item.with_suffix(".voice.wav")
+                if voice_fp.exists():
+                    try:
+                        voice_fp.unlink()
+                    except Exception:
+                        pass
+            except Exception as e:
+                stats["errors"] += 1
+                logger.warning(f"[点歌] 删除孤立文件失败 {item.name}: {e}")
+    except Exception as e:
+        stats["errors"] += 1
+        logger.warning(f"[点歌] 扫描music目录失败: {e}")
+
+    logger.info(
+        f"[点歌] 过期清理完成（保留{retention_days}天）："
+        f"删除歌曲记录 {stats['removed_records']} 条，"
+        f"删除孤立文件 {stats['removed_orphans']} 个，"
+        f"失败 {stats['errors']} 个"
+    )
+    return stats
+
+
+async def cleanup_expired_songs_async() -> dict:
+    """异步包装清理函数（供定时任务调用）"""
+    import asyncio
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _cleanup_expired_songs)
+
+
+# ============================================================
+# 定时清理调度
+# ============================================================
+_music_scheduler = None
+_music_cleanup_started = False
+
+
+def start_music_cleanup(driver=None) -> None:
+    """
+    启动音乐过期清理：
+    1) 启动时立即执行一次清理
+    2) 每日 cleanup_time（默认08:00）定时清理
+    """
+    global _music_scheduler, _music_cleanup_started
+
+    enable_cleanup = str(_conf("enable_cleanup", True)).strip().lower() not in ("false", "0", "no", "")
+    if not enable_cleanup:
+        logger.info("[点歌] 过期音频清理已禁用")
+        return
+
+    if _music_cleanup_started:
+        return
+    _music_cleanup_started = True
+
+    cleanup_time_str = str(_conf("cleanup_time", "08:00") or "08:00").strip()
+    import re as _re
+    m = _re.match(r"^(\d{1,2}):(\d{2})$", cleanup_time_str)
+    if not m:
+        logger.warning(f"[点歌] cleanup_time 配置非法: {cleanup_time_str!r}，使用默认 08:00")
+        hour, minute = 8, 0
+    else:
+        hour, minute = int(m.group(1)), int(m.group(2))
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            hour, minute = 8, 0
+
+    def _do_start():
+        global _music_scheduler
+        # 启动时先执行一次清理
+        try:
+            _cleanup_expired_songs()
+        except Exception as e:
+            logger.warning(f"[点歌] 启动时清理异常: {e}")
+
+        # 注册定时任务
+        try:
+            from apscheduler.schedulers.asyncio import AsyncIOScheduler
+            from apscheduler.triggers.cron import CronTrigger
+        except ImportError:
+            logger.warning(
+                "[点歌] APScheduler 未安装，每日定时清理未启动。"
+                "请执行: .venv\\Scripts\\python.exe -m pip install APScheduler"
+            )
+            return
+
+        scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
+        scheduler.add_job(
+            cleanup_expired_songs_async,
+            trigger=CronTrigger(hour=hour, minute=minute),
+            id="miku_music_daily_cleanup",
+            name=f"音乐过期清理 {hour:02d}:{minute:02d}",
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=600,
+        )
+        scheduler.start()
+        _music_scheduler = scheduler
+        logger.info(f"[点歌] 过期音频清理已启动，每日 {hour:02d}:{minute:02d} 执行，保留 {_get_retention_days()} 天")
+
+    if driver is not None:
+        @driver.on_bot_connect
+        async def _on_bot_connect(bot):
+            _do_start()
+
+        @driver.on_shutdown
+        async def _on_shutdown():
+            global _music_scheduler
+            if _music_scheduler and _music_scheduler.running:
+                try:
+                    _music_scheduler.shutdown(wait=False)
+                except Exception:
+                    pass
+                _music_scheduler = None
+    else:
+        _do_start()
 
 
 # ============================================================
@@ -1930,6 +2210,7 @@ async def _download_ncm_by_id(song_id: int, song_name: str, artist: str,
         "quality": actual_quality,
         "is_cover": is_cover,
         "original_artist": original_artist,
+        "download_time": time.time(),
     }
     _add_song_to_library(song_info)
 
