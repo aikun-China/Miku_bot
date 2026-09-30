@@ -55,6 +55,7 @@ from .data_source import (
     get_history_manager, build_system_prompt,
 )
 from .emoji_library import EmojiLibrary
+from .vision import clean_image_url
 
 
 _driver = get_driver()
@@ -184,8 +185,8 @@ def _extract_text_and_images(event: MessageEvent, reply_msg=None):
             if t:
                 text_parts.append(t)
         elif seg.type == "image":
-            # QQ NT 客户端的图片 URL 首尾常带反引号包裹，直接下载会失败，源头剥掉
-            url = str(seg.data.get("url", "")).strip().strip("`'\" \r\n\t").strip()
+            # NTQQ 图片 URL 外层的包裹字符（反引号/弯引号等）由 clean_image_url 统一提取
+            url = clean_image_url(str(seg.data.get("url", "")))
             file = seg.data.get("file", "")
             if url:
                 image_urls.append(url)

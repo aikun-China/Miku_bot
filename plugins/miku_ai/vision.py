@@ -102,6 +102,9 @@ async def url_to_data_uri(image_url: str, local_file: str = "") -> Optional[str]
     """
     content = await _download_image_bytes(image_url)
     if not content and local_file:
+        # 直链失效（rkey 缺失/过期）时走协议端 get_image 兜底
+        content = await _fetch_image_via_onebot(local_file)
+    if not content and local_file:
         for candidate in (Path(local_file), PROJECT_ROOT / "data" / "images" / local_file):
             try:
                 if candidate.exists():
@@ -125,14 +128,24 @@ _download_cache: Dict[str, bytes] = {}
 _DOWNLOAD_CACHE_MAX = 16
 
 
-def _clean_image_url(url: str) -> str:
-    # QQ NT 客户端发来的图片 URL 首尾常被反引号/引号/空白包裹（观察日志 url=`https://...`，
-    # file_size 参数落在反引号之外可证反引号属于 URL 值本身），直接请求会失败，必须剥掉
-    return (url or "").strip().strip("`'\" \r\n\t　").strip()
+# 从文本中提取 http(s) URL 本体：外层可能被反引号/引号/空白等包裹，且不同协议端实现的
+# 包裹字符不一（ASCII 反引号、弯引号、U+02CB 等都有可能），逐个枚举 strip 不可靠。
+# 否定字符类与 _URL_STRIP_CHARS 覆盖已知包裹字符；URL 中本就不该出现这些字符，截断无副作用
+_URL_RE = re.compile(r"""https?://[^\s`'"‘’“”„‟ˋˊ«»‹›<>\\，。；、！？]+""")
+_URL_STRIP_CHARS = "`'\"‘’“”„‟ˋˊ«»‹›　 \t\r\n,，。；、！？)）】」》"
+
+
+def clean_image_url(url: str) -> str:
+    """剥掉 NTQQ 图片链接外层的包裹字符，提取 URL 本体"""
+    text = (url or "").strip()
+    m = _URL_RE.search(text)
+    if m:
+        return m.group(0).rstrip(_URL_STRIP_CHARS)
+    return text.strip(_URL_STRIP_CHARS)
 
 
 async def _download_image_bytes(image_url: str) -> Optional[bytes]:
-    image_url = _clean_image_url(image_url)
+    image_url = clean_image_url(image_url)
     if not image_url:
         return None
     if image_url.startswith("data:"):
@@ -156,7 +169,8 @@ async def _download_image_bytes(image_url: str) -> Optional[bytes]:
                         _download_cache.pop(next(iter(_download_cache)), None)
                     _download_cache[image_url] = resp.content
                     return resp.content
-                logger.warning(f"[miku_ai] 下载图片失败(第{attempt + 1}次) HTTP {resp.status_code}: {image_url[:100]}")
+                hint = "（直链已失效）" if resp.status_code in (400, 403, 404) else ""
+                logger.warning(f"[miku_ai] 下载图片失败(第{attempt + 1}次) HTTP {resp.status_code}{hint}: {image_url[:100]}")
         except Exception as e:
             logger.warning(f"[miku_ai] 下载图片异常(第{attempt + 1}次): {type(e).__name__}: {e}")
         if attempt == 0:
@@ -164,8 +178,53 @@ async def _download_image_bytes(image_url: str) -> Optional[bytes]:
     return None
 
 
+async def _fetch_image_via_onebot(file_id: str) -> Optional[bytes]:
+    """
+    直链失效（HTTP 400/403，多为 NTQQ rkey 缺失或过期）时的兜底：
+    调用 OneBot get_image API 让协议端（NapCat/Lagrange）自行取图——
+    其返回的 url 带新鲜有效 rkey 可直接下载；其返回的本地缓存路径在
+    协议端与本机同机部署时可直接读取
+    """
+    if not file_id:
+        return None
+    try:
+        from nonebot import get_driver
+        bot = next(iter(get_driver().bots.values()), None)
+    except Exception:
+        return None
+    if bot is None or not hasattr(bot, "call_api"):
+        return None
+    try:
+        r = await bot.call_api("get_image", file=file_id)
+    except Exception as e:
+        logger.warning(f"[miku_ai] get_image 兜底失败: {type(e).__name__}: {e}")
+        return None
+    if not isinstance(r, dict):
+        return None
+    for key in ("url", "file_url"):
+        u = clean_image_url(str(r.get(key) or ""))
+        if u.startswith("http"):
+            content = await _download_image_bytes(u)
+            if content:
+                logger.info(f"[miku_ai] get_image 兜底成功（URL下载 {len(content)}B）")
+                return content
+    f = str(r.get("file") or "").strip()
+    if f.startswith("file://"):
+        f = f[len("file://"):]
+    if f:
+        try:
+            p = Path(f)
+            if p.is_absolute() and p.exists():
+                content = p.read_bytes()
+                logger.info(f"[miku_ai] get_image 兜底成功（本地文件 {len(content)}B）")
+                return content
+        except Exception:
+            pass
+    return None
+
+
 async def fetch_image_info(image_url: str, local_file: str = "") -> Dict:
-    image_url = _clean_image_url(image_url)
+    image_url = clean_image_url(image_url)
     result = {"url": image_url, "file_size": 0, "width": 0, "height": 0,
               "mime_type": "", "image_hash": "", "is_gif": False}
 
@@ -186,6 +245,10 @@ async def fetch_image_info(image_url: str, local_file: str = "") -> Dict:
         except Exception as e:
             logger.warning(f"[miku_ai] URL下载图片异常: {type(e).__name__}: {e}")
     
+    if content is None and local_file:
+        # 直链失效（HTTP 400/403，rkey 缺失/过期）时走协议端 get_image 兜底
+        content = await _fetch_image_via_onebot(local_file)
+
     if content is None and local_file:
         local_path = None
         p = Path(local_file)
