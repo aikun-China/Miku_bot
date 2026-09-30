@@ -2377,10 +2377,12 @@ async def handle_qr_login(bot: Bot, event: MessageEvent):
                         if not cookie or "MUSIC_U" not in cookie:
                             await qr_login_cmd.finish("登录成功，但未获取到 MUSIC_U，请手动复制 Cookie")
                             return
-                        # 保存到 bot.yaml
+                        # 保存到 bot.yaml（set 已同时更新内存与磁盘）
                         config_manager.set("miku_music", "ncm_cookie", cookie)
-                        # 重置 pyncm 会话
+                        # 重置 pyncm 会话 + 清除 Cookie 状态缓存，使新 cookie 立即生效
                         _init_pyncm_session()
+                        _COOKIE_STATUS["valid"] = None
+                        _COOKIE_STATUS["last_check"] = 0
                         nick = ""
                         try:
                             valid, info = await _check_cookie_validity(cookie)
@@ -2388,7 +2390,7 @@ async def handle_qr_login(bot: Bot, event: MessageEvent):
                                 nick = f"（{info['nickname']}）"
                         except Exception:
                             pass
-                        await qr_login_cmd.finish(f"✅ 网易云登录成功{nick}！Cookie 已保存，重启后生效")
+                        await qr_login_cmd.finish(f"✅ 网易云登录成功{nick}！Cookie 已保存并生效")
                         return
                     elif code == 802:
                         # 已扫码，等待确认
@@ -2397,11 +2399,15 @@ async def handle_qr_login(bot: Bot, event: MessageEvent):
                         await qr_login_cmd.finish("⏰ 二维码已过期，请重新发送「网易云登录」")
                         return
                     # 801 = 等待扫码，继续轮询
+                except FinishedException:
+                    raise
                 except Exception:
                     continue
 
             await qr_login_cmd.finish("⏰ 二维码已超时，请重新发送「网易云登录」")
 
+    except FinishedException:
+        raise
     except Exception as e:
         logger.error(f"[点歌] 网易云登录异常: {e}")
         await qr_login_cmd.finish(f"登录失败：{e}")
