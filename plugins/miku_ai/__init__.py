@@ -184,7 +184,8 @@ def _extract_text_and_images(event: MessageEvent, reply_msg=None):
             if t:
                 text_parts.append(t)
         elif seg.type == "image":
-            url = seg.data.get("url", "")
+            # QQ NT 客户端的图片 URL 首尾常带反引号包裹，直接下载会失败，源头剥掉
+            url = str(seg.data.get("url", "")).strip().strip("`'\" \r\n\t").strip()
             file = seg.data.get("file", "")
             if url:
                 image_urls.append(url)

@@ -125,7 +125,14 @@ _download_cache: Dict[str, bytes] = {}
 _DOWNLOAD_CACHE_MAX = 16
 
 
+def _clean_image_url(url: str) -> str:
+    # QQ NT 客户端发来的图片 URL 首尾常被反引号/引号/空白包裹（观察日志 url=`https://...`，
+    # file_size 参数落在反引号之外可证反引号属于 URL 值本身），直接请求会失败，必须剥掉
+    return (url or "").strip().strip("`'\" \r\n\t　").strip()
+
+
 async def _download_image_bytes(image_url: str) -> Optional[bytes]:
+    image_url = _clean_image_url(image_url)
     if not image_url:
         return None
     if image_url.startswith("data:"):
@@ -136,28 +143,32 @@ async def _download_image_bytes(image_url: str) -> Optional[bytes]:
             return None
     if image_url in _download_cache:
         return _download_cache[image_url]
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://qpic.qq.com/",
-        }
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, headers=headers) as client:
-            resp = await client.get(image_url)
-            if resp.status_code == 200 and resp.content:
-                if len(_download_cache) >= _DOWNLOAD_CACHE_MAX:
-                    _download_cache.pop(next(iter(_download_cache)), None)
-                _download_cache[image_url] = resp.content
-                return resp.content
-            logger.debug(f"[miku_ai] 下载图片失败 HTTP {resp.status_code}: {image_url[:80]}")
-    except Exception as e:
-        logger.debug(f"[miku_ai] 下载图片异常: {e}")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://qpic.qq.com/",
+    }
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, headers=headers) as client:
+                resp = await client.get(image_url)
+                if resp.status_code == 200 and resp.content:
+                    if len(_download_cache) >= _DOWNLOAD_CACHE_MAX:
+                        _download_cache.pop(next(iter(_download_cache)), None)
+                    _download_cache[image_url] = resp.content
+                    return resp.content
+                logger.warning(f"[miku_ai] 下载图片失败(第{attempt + 1}次) HTTP {resp.status_code}: {image_url[:100]}")
+        except Exception as e:
+            logger.warning(f"[miku_ai] 下载图片异常(第{attempt + 1}次): {type(e).__name__}: {e}")
+        if attempt == 0:
+            await asyncio.sleep(0.8)
     return None
 
 
 async def fetch_image_info(image_url: str, local_file: str = "") -> Dict:
+    image_url = _clean_image_url(image_url)
     result = {"url": image_url, "file_size": 0, "width": 0, "height": 0,
               "mime_type": "", "image_hash": "", "is_gif": False}
-    
+
     content = None
     if image_url:
         try:
@@ -170,10 +181,10 @@ async def fetch_image_info(image_url: str, local_file: str = "") -> Dict:
                 if resp.status_code == 200:
                     content = resp.content
                     result["mime_type"] = resp.headers.get("content-type", "")
-                elif resp.status_code == 403:
-                    logger.debug(f"[miku_ai] 图片下载403（防盗链），尝试本地缓存: {local_file}")
+                else:
+                    logger.warning(f"[miku_ai] 图片元数据下载失败 HTTP {resp.status_code}（403=防盗链），尝试本地缓存: {local_file}")
         except Exception as e:
-            logger.debug(f"[miku_ai] URL下载图片异常: {e}")
+            logger.warning(f"[miku_ai] URL下载图片异常: {type(e).__name__}: {e}")
     
     if content is None and local_file:
         local_path = None
