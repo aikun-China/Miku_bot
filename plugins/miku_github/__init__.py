@@ -317,24 +317,31 @@ async def upload_file(local_path: Path, remote_path: str, message: str = "backup
         return False
 
     b64 = base64.b64encode(content).decode("utf-8")
-    sha = await _get_file_sha(remote_path)
-
-    payload: Dict = {
-        "message": message,
-        "content": b64,
-    }
-    if sha:
-        payload["sha"] = sha
-
     full = _get_repo_full_name()
-    status, data = await _api_request(
-        "PUT",
-        f"{GITHUB_API}/repos/{full}/contents/{remote_path}",
-        json=payload,
-    )
-    if status in (200, 201):
-        return True
-    logger.warning(f"[miku_github] 上传失败 {remote_path}: {data.get('message', '未知')}")
+    url = f"{GITHUB_API}/repos/{full}/contents/{remote_path}"
+
+    # PUT 会前移分支 HEAD，若与其他提交产生 fast-forward 冲突（409）需重新取 sha 重试
+    data: dict = {}
+    for attempt in range(3):
+        sha = await _get_file_sha(remote_path)
+        payload: Dict = {
+            "message": message,
+            "content": b64,
+        }
+        if sha:
+            payload["sha"] = sha
+
+        status, data = await _api_request("PUT", url, json=payload)
+        if status in (200, 201):
+            return True
+        msg_text = str(data.get("message", ""))
+        if status == 409 or "is at" in msg_text:
+            logger.info(f"[miku_github] 上传冲突，重试({attempt + 1}/2): {remote_path}")
+            await asyncio.sleep(1.0 + attempt)
+            continue
+        logger.warning(f"[miku_github] 上传失败 {remote_path}: {msg_text or '未知'}")
+        return False
+    logger.warning(f"[miku_github] 上传失败（重试耗尽）{remote_path}: {data.get('message', '未知')}")
     return False
 
 
@@ -553,16 +560,14 @@ async def do_backup() -> Tuple[bool, str]:
     success_count = 0
     fail_count = 0
     skipped: List[str] = []
-    sem = asyncio.Semaphore(8)
 
-    async def _up(local_path: Path, rel_path: str) -> bool:
-        async with sem:
-            return await upload_file(local_path, f"{dir_name}/{rel_path}", message=f"backup {dir_name}")
-
-    # 散文件并发上传
-    results = await asyncio.gather(*[_up(p, rel) for p, rel in files])
-    success_count += sum(1 for r in results if r)
-    fail_count += sum(1 for r in results if not r)
+    # 散文件串行上传：Contents API 的每次 PUT 都会前移分支 HEAD，
+    # 并发 PUT 会互相产生 fast-forward 409 冲突，必须串行
+    for local_path, rel_path in files:
+        if await upload_file(local_path, f"{dir_name}/{rel_path}", message=f"backup {dir_name}"):
+            success_count += 1
+        else:
+            fail_count += 1
 
     # 目录打包为 zip 上传
     for rel_dir in BACKUP_ZIP_DIRS:
