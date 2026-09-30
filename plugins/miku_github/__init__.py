@@ -15,6 +15,7 @@ import base64
 import json
 import os
 import re
+import ssl
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -22,6 +23,7 @@ from typing import Dict, List, Optional, Tuple
 
 import httpx
 from nonebot import on_command, get_driver
+from nonebot.exception import FinishedException
 from nonebot.adapters.onebot.v11 import Bot, MessageEvent
 from nonebot.params import CommandArg
 from nonebot.log import logger
@@ -57,6 +59,8 @@ _TEMPLATE = (
     "  repo_name: \"Mikubot-Backup\"\n"
     "  # 备份保留天数（超过此天数的备份自动清理）\n"
     "  retention_days: 30\n"
+    "  # 是否验证SSL证书（开启网络加速且代理证书不受信任时出现SSL错误，可设为 false）\n"
+    "  verify_ssl: true\n"
     "  # 每日自动备份时间（HH:MM 格式）\n"
     "  backup_time: \"00:00\"\n"
     "  # 是否在启动时检查仓库是否存在（不存在则创建）\n"
@@ -71,6 +75,7 @@ _cfg = config_manager.register_plugin(
         "repo_owner": "",
         "repo_name": "Mikubot-Backup",
         "retention_days": 30,
+        "verify_ssl": True,
         "backup_time": "00:00",
         "auto_create_repo": True,
     },
@@ -169,22 +174,68 @@ def _check_token_configured() -> Tuple[bool, str]:
     return True, ""
 
 
+_SSL_DEGRADED = False
+
+
+def _ssl_verify_param():
+    """构建 httpx verify 参数：合并 certifi 与系统证书库（兼容加速代理根证书）；已降级或配置关闭时返回 False"""
+    if _SSL_DEGRADED or not _conf("verify_ssl", True):
+        return False
+    try:
+        ctx = ssl.create_default_context()
+        try:
+            import certifi
+            ctx.load_verify_locations(certifi.where())
+        except Exception:
+            pass
+        try:
+            ctx.load_default_certs()
+        except Exception:
+            pass
+        return ctx
+    except Exception:
+        return True
+
+
+def _is_ssl_error(e: Exception) -> bool:
+    msg = str(e).lower()
+    return "certificate" in msg or "ssl" in msg
+
+
+async def _do_http(method: str, url: str, headers: dict, verify, **kwargs) -> Tuple[int, dict]:
+    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True, verify=verify) as client:
+        resp = await client.request(method, url, headers=headers, **kwargs)
+        try:
+            data = resp.json()
+        except Exception:
+            data = {"message": resp.text[:500]}
+        return resp.status_code, data
+
+
 async def _api_request(method: str, url: str, **kwargs) -> Tuple[int, dict]:
-    """统一的 GitHub API 请求，返回 (status_code, json_data)"""
+    """统一的 GitHub API 请求，返回 (status_code, json_data)；SSL证书验证失败时自动降级为不验证并重试"""
+    global _SSL_DEGRADED
     headers = _get_headers()
     if "headers" in kwargs:
         headers.update(kwargs.pop("headers"))
-    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+    verify = _ssl_verify_param()
+    if verify is not False:
         try:
-            resp = await client.request(method, url, headers=headers, **kwargs)
-            try:
-                data = resp.json()
-            except Exception:
-                data = {"message": resp.text[:500]}
-            return resp.status_code, data
-        except Exception as e:
-            logger.error(f"[miku_github] API请求异常 {method} {url}: {e}")
-            return 0, {"message": str(e)}
+            return await _do_http(method, url, headers, verify, **kwargs)
+        except httpx.ConnectError as e:
+            if not _is_ssl_error(e):
+                logger.error(f"[miku_github] API请求异常 {method} {url}: {e}")
+                return 0, {"message": str(e)}
+            _SSL_DEGRADED = True
+            logger.warning(
+                "[miku_github] SSL证书验证失败（加速代理证书不在信任列表），已自动降级为不验证证书并重试，"
+                "后续请求将直接使用不验证模式"
+            )
+    try:
+        return await _do_http(method, url, headers, False, **kwargs)
+    except Exception as e:
+        logger.error(f"[miku_github] API请求异常 {method} {url}: {e}")
+        return 0, {"message": str(e)}
 
 
 async def check_repo_exists() -> Tuple[bool, str]:
@@ -656,6 +707,8 @@ async def _handle_git_backup(bot: Bot, event: MessageEvent):
         except Exception as e:
             logger.warning(f"[miku_github] 备份后清理异常: {e}")
         await git_backup_cmd.finish(msg if ok else f"备份失败: {msg}")
+    except FinishedException:
+        raise
     except Exception as e:
         logger.exception("[miku_github] git备份异常")
         await git_backup_cmd.finish(f"备份异常: {e}")
@@ -681,6 +734,8 @@ async def _handle_git_restore(bot: Bot, event: MessageEvent, args: Message = Com
             await git_restore_cmd.send("正在恢复最近一次备份，请稍候...")
             ok, msg = await do_restore(None)
         await git_restore_cmd.finish(msg if ok else f"恢复失败: {msg}")
+    except FinishedException:
+        raise
     except Exception as e:
         logger.exception("[miku_github] git恢复异常")
         await git_restore_cmd.finish(f"恢复异常: {e}")
@@ -705,6 +760,8 @@ async def _handle_git_list(bot: Bot, event: MessageEvent):
             else:
                 lines.append(f"  {d}")
         await git_list_cmd.finish("\n".join(lines))
+    except FinishedException:
+        raise
     except Exception as e:
         logger.exception("[miku_github] git备份列表异常")
         await git_list_cmd.finish(f"查询异常: {e}")
