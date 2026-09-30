@@ -11,12 +11,15 @@ GitHub Token 获取：https://github.com/settings/tokens （需 repo 权限）
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import os
 import re
 import ssl
+import tempfile
 import time
+import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -96,24 +99,27 @@ def _conf(key: str, default=None):
 # ============================================================
 # 备份清单（待办中指定的文件/目录）
 # ============================================================
-# 每个条目：(相对项目根目录的路径, 是否目录)
-BACKUP_ITEMS: List[Tuple[str, bool]] = [
-    (".env", False),
-    ("logs", True),               # 仅备份前一天的日志文件
-    ("data/blacklist.json", False),
-    ("data/command_stats.json", False),
-    ("data/parser_groups.json", False),
-    ("data/shop.json", False),
-    ("data/webui_devices.json", False),
-    ("data/global_daily_stats.json", False),
-    ("data/message_stats.json", False),
-    ("data/plugin_stats.json", False),
-    ("data/users", True),          # 备份所有用户文件
-    ("data/chat_history", True),   # 备份所有聊天历史
-    ("data/ai_chat_history", True),  # 备份所有AI聊天历史
-    ("config/group_welcome.json", False),
-    ("config/bot.yaml", False),
-    ("config/welcome_imgs", True),  # 备份所有欢迎图片
+# 每个条目：相对项目根目录的文件路径（散文件，并发上传）
+BACKUP_ITEMS: List[str] = [
+    ".env",
+    "data/blacklist.json",
+    "data/command_stats.json",
+    "data/parser_groups.json",
+    "data/shop.json",
+    "data/webui_devices.json",
+    "data/global_daily_stats.json",
+    "data/message_stats.json",
+    "data/plugin_stats.json",
+    "config/group_welcome.json",
+    "config/bot.yaml",
+]
+
+# 打包上传的目录（文件数多，逐个上传极慢，各自打包成一个 zip）
+BACKUP_ZIP_DIRS: List[str] = [
+    "data/users",
+    "data/chat_history",
+    "data/ai_chat_history",
+    "config/welcome_imgs",
 ]
 
 # logs 目录特殊处理：仅备份前一天的日志
@@ -463,44 +469,68 @@ async def _find_available_dir_name(target_date: datetime) -> str:
 # ============================================================
 def _collect_backup_files() -> List[Tuple[Path, str]]:
     """
-    收集需要备份的本地文件列表。
-    返回 [(本地绝对路径, 仓库内相对路径), ...]
+    收集需要备份的本地散文件列表。
+    返回 [(本地绝对路径, 仓库内相对路径), ...]（不含 zip 打包目录）
     仓库内相对路径以备份文件夹名为前缀（由调用方拼接）。
     """
     results: List[Tuple[Path, str]] = []
 
-    for rel_path, is_dir in BACKUP_ITEMS:
+    # 前一天的日志
+    for log_file in _get_backup_log_files():
+        results.append((log_file, f"logs/{log_file.name}"))
+
+    for rel_path in BACKUP_ITEMS:
         local = PROJECT_ROOT / rel_path
-
-        if rel_path == "logs":
-            # logs 特殊处理：仅备份前一天的日志
-            for log_file in _get_backup_log_files():
-                rel = f"logs/{log_file.name}"
-                results.append((log_file, rel))
-            continue
-
-        if not local.exists():
-            logger.debug(f"[miku_github] 备份项不存在，跳过: {rel_path}")
-            continue
-
-        if is_dir:
-            # 递归收集目录下所有文件
-            for root, _, files in os.walk(local):
-                for fname in files:
-                    fp = Path(root) / fname
-                    rel = fp.relative_to(PROJECT_ROOT).as_posix()
-                    results.append((fp, rel))
+        if local.is_file():
+            results.append((local, rel_path))
         else:
-            if local.is_file():
-                results.append((local, rel_path))
+            logger.debug(f"[miku_github] 备份项不存在，跳过: {rel_path}")
 
     return results
+
+
+def _zip_directory(local_dir: Path, zip_path: Path) -> Tuple[int, int]:
+    """
+    打包目录为 zip，arcname 使用相对项目根的 posix 路径。
+    返回 (文件数, zip 字节数)。
+    """
+    count = 0
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root, _, files in os.walk(local_dir):
+            for fname in files:
+                fp = Path(root) / fname
+                zf.write(fp, fp.relative_to(PROJECT_ROOT).as_posix())
+                count += 1
+    return count, zip_path.stat().st_size
+
+
+def _extract_zip(zip_path: Path, dest: Path) -> bool:
+    """安全解压 zip 到目标目录（防路径穿越）"""
+    try:
+        dest_resolved = str(dest.resolve())
+        with zipfile.ZipFile(zip_path) as zf:
+            for member in zf.namelist():
+                target = (dest / member).resolve()
+                if not str(target).startswith(dest_resolved):
+                    logger.warning(f"[miku_github] zip成员路径异常，跳过: {member}")
+                    continue
+            zf.extractall(dest)
+        return True
+    except Exception as e:
+        logger.warning(f"[miku_github] zip解压失败 {zip_path.name}: {e}")
+        return False
+
+
+def _zip_name_for(rel_dir: str) -> str:
+    """目录对应的 zip 包名：data/chat_history -> data_chat_history.zip"""
+    return rel_dir.replace("/", "_") + ".zip"
 
 
 async def do_backup() -> Tuple[bool, str]:
     """
     执行一次备份。
     备份文件夹名 = 前一天日期（同一天多次备份加 -x 后缀）
+    散文件并发上传，目录打包为 zip 上传（避免逐文件上传耗时数小时）。
     """
     ok, msg = _check_token_configured()
     if not ok:
@@ -522,19 +552,52 @@ async def do_backup() -> Tuple[bool, str]:
 
     success_count = 0
     fail_count = 0
-    for local_path, rel_path in files:
-        remote_path = f"{dir_name}/{rel_path}"
-        if await upload_file(local_path, remote_path, message=f"backup {dir_name}"):
-            success_count += 1
-        else:
+    skipped: List[str] = []
+    sem = asyncio.Semaphore(8)
+
+    async def _up(local_path: Path, rel_path: str) -> bool:
+        async with sem:
+            return await upload_file(local_path, f"{dir_name}/{rel_path}", message=f"backup {dir_name}")
+
+    # 散文件并发上传
+    results = await asyncio.gather(*[_up(p, rel) for p, rel in files])
+    success_count += sum(1 for r in results if r)
+    fail_count += sum(1 for r in results if not r)
+
+    # 目录打包为 zip 上传
+    for rel_dir in BACKUP_ZIP_DIRS:
+        local_dir = PROJECT_ROOT / rel_dir
+        if not local_dir.is_dir() or not any(local_dir.iterdir()):
+            logger.debug(f"[miku_github] 打包目录为空，跳过: {rel_dir}")
+            continue
+        zip_name = _zip_name_for(rel_dir)
+        tmp_zip = Path(tempfile.gettempdir()) / f"mikubot_{zip_name}"
+        try:
+            n_files, zsize = _zip_directory(local_dir, tmp_zip)
+            if zsize > 100 * 1024 * 1024:
+                skipped.append(f"{zip_name}({n_files}个文件,zip超过100MB)")
+                logger.warning(f"[miku_github] {zip_name} 超过GitHub单文件100MB限制，跳过")
+                continue
+            if await upload_file(tmp_zip, f"{dir_name}/{zip_name}", message=f"backup {dir_name}"):
+                success_count += 1
+                logger.info(
+                    f"[miku_github] 目录打包上传完成: {zip_name}"
+                    f"（{n_files}个文件, {zsize / 1024 / 1024:.1f}MB）"
+                )
+            else:
+                fail_count += 1
+        except Exception as e:
+            logger.warning(f"[miku_github] 打包上传失败 {rel_dir}: {e}")
             fail_count += 1
-        # 避免请求过快
-        await asyncio_sleep(0.1)
+        finally:
+            tmp_zip.unlink(missing_ok=True)
 
     if success_count == 0:
-        return False, f"备份失败，所有文件上传失败（共{len(files)}个）"
+        return False, f"备份失败，所有文件上传失败（共{len(files) + len(BACKUP_ZIP_DIRS)}项）"
 
-    result_msg = f"备份完成: {dir_name}，成功 {success_count} 个，失败 {fail_count} 个"
+    result_msg = f"备份完成: {dir_name}，成功 {success_count} 项，失败 {fail_count} 项"
+    if skipped:
+        result_msg += f"，跳过 {len(skipped)} 项（{'、'.join(skipped)}）"
     logger.info(f"[miku_github] {result_msg}")
     return True, result_msg
 
@@ -573,23 +636,38 @@ async def do_restore(backup_dir: Optional[str] = None) -> Tuple[bool, str]:
 
     success_count = 0
     fail_count = 0
-    for entry in entries:
+    zip_names = {_zip_name_for(d) for d in BACKUP_ZIP_DIRS}
+    sem = asyncio.Semaphore(8)
+
+    async def _down(entry: dict) -> Tuple[bool, bool]:
+        """下载单个条目，返回 (成功, 是否zip包)"""
         remote_path = entry.get("path", "")
         if not remote_path:
-            continue
-        # 去掉备份文件夹前缀，得到项目内相对路径
+            return False, False
         rel = remote_path[len(backup_dir) + 1:] if remote_path.startswith(backup_dir + "/") else remote_path
-        local_path = PROJECT_ROOT / rel
-        if await download_file(remote_path, local_path):
-            success_count += 1
-        else:
-            fail_count += 1
-        await asyncio_sleep(0.1)
+        async with sem:
+            if rel in zip_names:
+                tmp = Path(tempfile.gettempdir()) / f"mikubot_restore_{rel}"
+                try:
+                    if await download_file(remote_path, tmp) and _extract_zip(tmp, PROJECT_ROOT):
+                        return True, True
+                    return False, True
+                finally:
+                    tmp.unlink(missing_ok=True)
+            local_path = PROJECT_ROOT / rel
+            return await download_file(remote_path, local_path), False
+
+    results = await asyncio.gather(*[_down(e) for e in entries])
+    success_count = sum(1 for ok, _ in results if ok)
+    fail_count = len(results) - success_count
+    zip_count = sum(1 for ok, is_zip in results if ok and is_zip)
 
     if success_count == 0:
         return False, f"恢复失败，所有文件下载失败（共{len(entries)}个）"
 
-    result_msg = f"恢复完成: {backup_dir}，成功 {success_count} 个，失败 {fail_count} 个"
+    result_msg = f"恢复完成: {backup_dir}，成功 {success_count} 项，失败 {fail_count} 项"
+    if zip_count:
+        result_msg += f"（含 {zip_count} 个zip包已解压）"
     logger.info(f"[miku_github] {result_msg}")
     return True, result_msg
 
