@@ -2284,6 +2284,162 @@ async def handle_refresh(event: MessageEvent):
 
 
 # ============================================================
+# 网易云扫码登录
+# ============================================================
+
+def _is_superuser(user_id) -> bool:
+    try:
+        sus = config_manager.superusers or []
+        return str(user_id) in [str(s) for s in sus]
+    except Exception:
+        return False
+
+
+def _clean_qr_cookie(raw: str) -> str:
+    """从 /login/qr/check 返回的 cookie 字段中提取纯 key=value; 串
+    原始可能带 Set-Cookie 属性（Max-Age/Expires/Path/Domain 等），需剥离。"""
+    if not raw:
+        return ""
+    parts = []
+    for seg in raw.split(";"):
+        seg = seg.strip()
+        if not seg or "=" not in seg:
+            continue
+        key = seg.split("=", 1)[0].strip()
+        # 跳过 Set-Cookie 属性字段
+        if key.lower() in {"path", "domain", "expires", "max-age", "secure", "httponly", "samesite"}:
+            continue
+        parts.append(seg)
+    return "; ".join(parts)
+
+
+qr_login_cmd = on_command(
+    "网易云登录",
+    aliases={"网易云扫码", "网易云登录二维码"},
+    priority=5,
+    block=True,
+)
+
+
+@qr_login_cmd.handle()
+async def handle_qr_login(bot: Bot, event: MessageEvent):
+    if not _is_enabled():
+        return
+    if not _is_superuser(event.user_id):
+        await qr_login_cmd.finish("这个指令只有超级用户才能使用哦～")
+        return
+
+    import httpx
+    import base64
+
+    base = _get_music_api_base()
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            # 1. 获取 unikey
+            r = await client.get(f"{base}/login/qr/key")
+            if r.status_code != 200:
+                await qr_login_cmd.finish(f"获取二维码失败：HTTP {r.status_code}")
+                return
+            key = (r.json().get("data") or {}).get("unikey")
+            if not key:
+                await qr_login_cmd.finish("获取二维码失败：未返回 unikey")
+                return
+
+            # 2. 创建二维码
+            r2 = await client.get(f"{base}/login/qr/create", params={"key": key, "qrimg": "true"})
+            if r2.status_code != 200:
+                await qr_login_cmd.finish(f"创建二维码失败：HTTP {r2.status_code}")
+                return
+            qrimg = (r2.json().get("data") or {}).get("qrimg") or ""
+            if not qrimg.startswith("data:image"):
+                await qr_login_cmd.finish("创建二维码失败：返回格式异常")
+                return
+            # 去掉 data:image/png;base64, 前缀，解码为字节
+            b64 = qrimg.split(",", 1)[1]
+            img_bytes = base64.b64decode(b64)
+
+            await qr_login_cmd.send("请使用网易云音乐 App 扫描下方二维码登录（3分钟内有效）：")
+            await qr_login_cmd.send(MessageSegment.image(img_bytes))
+
+            # 3. 轮询扫码状态（每3秒一次，最多60次≈3分钟）
+            for _ in range(60):
+                await asyncio.sleep(3)
+                try:
+                    rc = await client.get(f"{base}/login/qr/check", params={"key": key})
+                    if rc.status_code != 200:
+                        continue
+                    cd = rc.json()
+                    code = cd.get("code")
+                    if code == 803:
+                        # 登录确认成功，提取 cookie
+                        raw_cookie = cd.get("cookie") or ""
+                        cookie = _clean_qr_cookie(raw_cookie)
+                        if not cookie or "MUSIC_U" not in cookie:
+                            await qr_login_cmd.finish("登录成功，但未获取到 MUSIC_U，请手动复制 Cookie")
+                            return
+                        # 保存到 bot.yaml
+                        config_manager.set("miku_music", "ncm_cookie", cookie)
+                        # 重置 pyncm 会话
+                        _init_pyncm_session()
+                        nick = ""
+                        try:
+                            valid, info = await _check_cookie_validity(cookie)
+                            if info and info.get("nickname"):
+                                nick = f"（{info['nickname']}）"
+                        except Exception:
+                            pass
+                        await qr_login_cmd.finish(f"✅ 网易云登录成功{nick}！Cookie 已保存，重启后生效")
+                        return
+                    elif code == 802:
+                        # 已扫码，等待确认
+                        continue
+                    elif code == 800:
+                        await qr_login_cmd.finish("⏰ 二维码已过期，请重新发送「网易云登录」")
+                        return
+                    # 801 = 等待扫码，继续轮询
+                except Exception:
+                    continue
+
+            await qr_login_cmd.finish("⏰ 二维码已超时，请重新发送「网易云登录」")
+
+    except Exception as e:
+        logger.error(f"[点歌] 网易云登录异常: {e}")
+        await qr_login_cmd.finish(f"登录失败：{e}")
+
+
+qr_status_cmd = on_command(
+    "网易云登录状态",
+    aliases={"网易云状态", "网易云cookie"},
+    priority=5,
+    block=True,
+)
+
+
+@qr_status_cmd.handle()
+async def handle_qr_status(event: MessageEvent):
+    if not _is_enabled():
+        return
+    if not _is_superuser(event.user_id):
+        await qr_status_cmd.finish("这个指令只有超级用户才能使用哦～")
+        return
+
+    cookie = _get_ncm_cookie()
+    if not cookie:
+        await qr_status_cmd.finish("当前未配置网易云 Cookie，发送「网易云登录」扫码登录")
+        return
+
+    valid, info = await _check_cookie_validity(cookie)
+    if valid is True:
+        nick = (info or {}).get("nickname", "未知")
+        vip = (info or {}).get("vipLabel", "未知")
+        await qr_status_cmd.finish(f"✅ 网易云登录状态正常\n用户：{nick}\n会员：{vip}")
+    elif valid is False:
+        await qr_status_cmd.finish("❌ 网易云 Cookie 已过期，请发送「网易云登录」重新扫码")
+    else:
+        await qr_status_cmd.finish("⚠️ 无法确定登录状态（API 可能未转发 Cookie），但不影响点歌功能")
+
+
+# ============================================================
 # 菜单注册
 # ============================================================
 try:
@@ -2299,7 +2455,7 @@ register_plugin_info(
     icon="🎵",
     order=7,
     description="本地+网易云点歌，自动下载缓存，可同步到文件分享站",
-    commands=["点歌", "歌单", "刷新歌单"],
+    commands=["点歌", "歌单", "刷新歌单", "网易云登录", "网易云登录状态"],
     usage=f"""点歌 <歌名> [音质]
 支持音质：标准/高清/极高/无损/母带
 默认标准音质，可指定高品质
@@ -2312,6 +2468,12 @@ register_plugin_info(
 
 刷新歌单
 重新加载歌曲配置
+
+网易云登录（仅超级用户）
+扫码登录网易云，自动保存Cookie
+
+网易云登录状态（仅超级用户）
+查看当前Cookie登录状态
 
 网易云搜索：{ncm_status}
 下载音质：标准/高清/极高/无损/母带（有Cookie支持高品质）
