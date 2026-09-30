@@ -74,9 +74,68 @@ def _image_bytes_to_data_uri(content: bytes, mime_type: str = "") -> str:
     return f"data:{mime_type};base64,{b64}"
 
 
+def _compress_image_bytes(content: bytes, max_dim: int = 2048, quality: int = 85) -> bytes:
+    """图片格式不兼容（GIF/WEBP/BMP）或过大时压缩转 JPEG，防止 API 解析失败/请求体超限"""
+    try:
+        from PIL import Image
+        import io as _io
+        img = Image.open(_io.BytesIO(content))
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        if max(img.size) > max_dim:
+            img.thumbnail((max_dim, max_dim))
+        buf = _io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality)
+        compressed = buf.getvalue()
+        img.close()
+        return compressed or content
+    except Exception:
+        return content
+
+
+async def url_to_data_uri(image_url: str, local_file: str = "") -> Optional[str]:
+    """
+    下载图片并转为 base64 data URI。
+    多模态 API 无法抓取 QQ 图片直链（gchat.qpic.cn 需防盗链 Referer 且很快失效，
+    直传会报 1210「图片输入格式/解析错误」），必须传 base64。
+    下载失败时回退本地缓存文件，全部失败返回 None。
+    """
+    content = await _download_image_bytes(image_url)
+    if not content and local_file:
+        for candidate in (Path(local_file), PROJECT_ROOT / "data" / "images" / local_file):
+            try:
+                if candidate.exists():
+                    content = candidate.read_bytes()
+                    break
+            except Exception:
+                pass
+    if not content:
+        return None
+    mime = _detect_mime_type(content)
+    if mime not in ("image/jpeg", "image/png") or len(content) > 4 * 1024 * 1024:
+        content = _compress_image_bytes(content)
+    try:
+        return _image_bytes_to_data_uri(content)
+    except Exception:
+        return None
+
+
+# 图片下载缓存（URL → bytes），同一条消息内识图/转 base64 共用，避免重复下载
+_download_cache: Dict[str, bytes] = {}
+_DOWNLOAD_CACHE_MAX = 16
+
+
 async def _download_image_bytes(image_url: str) -> Optional[bytes]:
     if not image_url:
         return None
+    if image_url.startswith("data:"):
+        try:
+            b64_part = image_url.split(",", 1)[1] if "," in image_url else ""
+            return base64.b64decode(b64_part) if b64_part else None
+        except Exception:
+            return None
+    if image_url in _download_cache:
+        return _download_cache[image_url]
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -85,6 +144,9 @@ async def _download_image_bytes(image_url: str) -> Optional[bytes]:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, headers=headers) as client:
             resp = await client.get(image_url)
             if resp.status_code == 200 and resp.content:
+                if len(_download_cache) >= _DOWNLOAD_CACHE_MAX:
+                    _download_cache.pop(next(iter(_download_cache)), None)
+                _download_cache[image_url] = resp.content
                 return resp.content
             logger.debug(f"[miku_ai] 下载图片失败 HTTP {resp.status_code}: {image_url[:80]}")
     except Exception as e:

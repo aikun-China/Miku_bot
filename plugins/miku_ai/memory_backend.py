@@ -158,18 +158,10 @@ class ChatHistoryManager:
                 if isinstance(content, str) and content:
                     content = f"[{bot_nickname}]: {content}"
             
-            if images and role == "user":
-                if isinstance(content, list):
-                    context.append({"role": role, "content": content})
-                else:
-                    text_part = [{"type": "text", "text": content}] if content else []
-                    image_parts = [
-                        {"type": "image_url", "image_url": {"url": img_url}}
-                        for img_url in images
-                    ]
-                    context.append({"role": role, "content": text_part + image_parts})
-            else:
-                context.append({"role": role, "content": content})
+            # 历史消息不再重放图片：QQ 图片直链几分钟后即失效，重放过期 URL 会导致
+            # API 报 1210「图片输入格式/解析错误」。图片内容在保存时已以文字描述
+            # （表情包识别结果/[图片] 占位）并入 content，此处仅保留文本
+            context.append({"role": role, "content": content})
         
         if system_prompt:
             context.insert(0, {"role": "system", "content": system_prompt})

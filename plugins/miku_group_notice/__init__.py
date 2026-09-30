@@ -677,6 +677,9 @@ async def handle_group_increase(bot: Bot, event):
         msg.append(MessageSegment.text(" 欢迎新人！"))
         logger.info(f"[群助手] 发送默认文字欢迎: group={group_id}")
         await group_increase.finish(msg)
+    except FinishedException:
+        # finish() 正常结束控制流，放行，避免被误判为处理失败
+        raise
     except Exception as e:
         logger.error(f"[群助手] 加群欢迎处理失败: {e}")
 
@@ -761,6 +764,9 @@ async def handle_group_decrease(bot: Bot, event):
 
         logger.info(f"[群助手] 发送退群文字通知: group={group_id}, sub_type={sub_type}")
         await group_decrease.finish(Message(leave_msg))
+    except FinishedException:
+        # finish() 正常结束控制流，放行，避免被误判为处理失败
+        raise
     except Exception as e:
         logger.error(f"[群助手] 退群通知处理失败: {e}")
 
@@ -1348,6 +1354,9 @@ async def handle_recall(bot: Bot, event):
         await bot.delete_msg(message_id=int(target_msg_id))
         logger.info(f"[群助手] 已撤回消息: msg_id={target_msg_id}")
         await recall_cmd.finish("✅ 已撤回该消息")
+    except FinishedException:
+        # finish() 正常结束控制流，放行，避免成功后误发「撤回失败」
+        raise
     except Exception as e:
         logger.error(f"[群助手] 撤回消息失败: {e}")
         await recall_cmd.finish(f"❌ 撤回失败：{e}")

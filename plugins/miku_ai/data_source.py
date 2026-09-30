@@ -57,7 +57,7 @@ def _normalize_content(raw_content, is_text_model: bool) -> str:
             # 多模态模型：保持 list 原样
             return raw_content
     return str(raw_content)
-from .vision import fetch_image_info, should_skip_recognize, recognize_emoji, format_emoji_text, get_vision_semaphore
+from .vision import fetch_image_info, should_skip_recognize, recognize_emoji, format_emoji_text, get_vision_semaphore, url_to_data_uri
 from .emoji_library import EmojiLibrary
 from .humanize import HumanizeEngine
 
@@ -690,11 +690,21 @@ async def process_chat(user_id: str, user_name: str, text: str,
         if dynamic_context:
             text_content = f"{dynamic_context}\n{user_content}"
         text_part = [{"type": "text", "text": text_content}]
-        image_parts = [
-            {"type": "image_url", "image_url": {"url": img_url}}
-            for img_url in processed_image_urls
-        ]
-        context_messages.append({"role": "user", "content": text_part + image_parts})
+        # QQ 图片直链带防盗链（需 Referer）且很快失效，直传 URL 会导致 API 报
+        # 1210「图片输入格式/解析错误」，必须下载后转 base64 data URI 直传。
+        # 历史记录仍保存原始 URL（见下方 append_message），避免 base64 撑爆历史文件
+        image_parts = []
+        for idx, img_url in enumerate(processed_image_urls):
+            local_file = image_files[idx] if idx < len(image_files) else ""
+            data_uri = await url_to_data_uri(img_url, local_file)
+            if data_uri:
+                image_parts.append({"type": "image_url", "image_url": {"url": data_uri}})
+            else:
+                logger.warning(f"[miku_ai] 图片转base64失败，跳过该图: {img_url[:80]}")
+        if image_parts:
+            context_messages.append({"role": "user", "content": text_part + image_parts})
+        else:
+            context_messages.append({"role": "user", "content": text_content})
     else:
         # 将元信息（群聊/情绪）作为前缀注入，历史对话已在结构化消息中
         if dynamic_context:
@@ -711,7 +721,17 @@ async def process_chat(user_id: str, user_name: str, text: str,
         if isinstance(c, str):
             return len(c)
         if isinstance(c, list):
-            return sum(len(str(p.get("text", ""))) if isinstance(p, dict) else len(str(p)) for p in c)
+            total = 0
+            for p in c:
+                if isinstance(p, dict):
+                    if p.get("type") == "image_url":
+                        # base64 图片按固定开销估算，避免真实长度（百万级字符）撑爆截断逻辑
+                        total += 500
+                    else:
+                        total += len(str(p.get("text", "")))
+                else:
+                    total += len(str(p))
+            return total
         return 500
 
     total_chars = sum(_msg_chars(m) for m in context_messages)
