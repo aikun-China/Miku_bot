@@ -227,6 +227,11 @@ def _conf(key: str, default=None):
     return config_manager.get("miku_music", key, default)
 
 
+def _get_music_api_base() -> str:
+    """网易云 API 代理基址（NeteaseCloudMusicApi Enhanced）"""
+    return str(_conf("ncm_api_base", "https://musicapi.aikun-bili.top") or "").strip().rstrip("/")
+
+
 # ============================================================
 # 网易云 Cookie 管理（SVIP 高品质下载）
 # ============================================================
@@ -258,11 +263,10 @@ def _get_ncm_cookie() -> str:
 
 async def _check_cookie_validity(cookie: str = None) -> Tuple[Optional[bool], Optional[dict]]:
     """
-    检测网易云 Cookie 是否有效
+    检测网易云 Cookie 是否有效（通过 NeteaseCloudMusicApi 代理）
     返回 (valid, info):
         valid: True=有效, False=已过期/无效, None=未配置Cookie或检测异常
         info:  dict with keys {nickname, userId, vipType, vipLabel} 或 None
-    使用 POST 方法访问用户信息接口
     """
     if cookie is None:
         cookie = _get_ncm_cookie()
@@ -271,7 +275,7 @@ async def _check_cookie_validity(cookie: str = None) -> Tuple[Optional[bool], Op
 
     import time
     now = time.time()
-    # 缓存结果，避免频繁检测（只用 cookie 是否完全相同做缓存 key 简化）
+    # 缓存结果，避免频繁检测
     if (_COOKIE_STATUS["valid"] is not None
             and (now - _COOKIE_STATUS["last_check"]) < _COOKIE_CHECK_INTERVAL):
         info = {}
@@ -282,196 +286,46 @@ async def _check_cookie_validity(cookie: str = None) -> Tuple[Optional[bool], Op
 
     try:
         import httpx
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": "https://music.163.com/",
-            "Cookie": cookie,
-            "Content-Type": "application/x-www-form-urlencoded",
-        }
+        base = _get_music_api_base()
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            # 先请求一次首页，让服务器种下 session cookie，再查登录态（更贴近真实流程）
-            try:
-                await client.get("https://music.163.com/", headers={
-                    "User-Agent": headers.get("User-Agent", ""),
-                    "Referer": "https://music.163.com/",
-                    "Cookie": cookie,
-                })
-            except Exception:
-                pass
-
-            # ===== 主检测接口0：/api/login/status（网易云新版登录状态查询）=====
-            try:
-                resp_s = await client.get(
-                    "https://music.163.com/api/login/status",
-                    headers=headers,
-                )
-                if resp_s.status_code == 200:
-                    ds = resp_s.json()
-                    if isinstance(ds, dict):
-                        code_s = ds.get("code")
-                        profile_s = (ds.get("profile") or {}) if isinstance(ds, dict) else {}
-                        account_s = (ds.get("account") or {}) if isinstance(ds, dict) else {}
-                        if code_s == 200 and ((profile_s and profile_s.get("userId")) or (account_s and account_s.get("id"))):
-                            nickname = profile_s.get("nickname", "未知") if isinstance(profile_s, dict) else "未知"
-                            user_id = profile_s.get("userId") if isinstance(profile_s, dict) else None
-                            vip_type = (profile_s.get("vipType", 0) if isinstance(profile_s, dict) else 0) or 0
-                            vip_label = {0: "非会员", 1: "VIP", 10: "黑胶VIP", 11: "SVIP"}.get(vip_type, f"Type{vip_type}")
-                            info = {"nickname": nickname, "userId": user_id, "vipType": vip_type, "vipLabel": vip_label}
-                            _COOKIE_STATUS["valid"] = True
-                            _COOKIE_STATUS["last_check"] = now
-                            _COOKIE_STATUS["nickname"] = nickname
-                            if user_id is not None:
-                                _COOKIE_STATUS["userId"] = user_id
-                            _COOKIE_STATUS["vipType"] = vip_type
-                            logger.info(f"[点歌] 网易云Cookie有效 (api/login/status)｜用户: {nickname}, 会员: {vip_label}")
-                            return (True, info)
-                        # code=200 但没 profile 时保留异常：打印首次响应，帮用户定位
-                        logger.debug(f"[点歌] /api/login/status 响应: code={code_s}, keys={list(ds.keys())[:12]}")
-            except Exception as _e:
-                logger.debug(f"[点歌] /api/login/status 检测异常: {_e}")
-
-            # ===== 主检测接口1：/api/nuser/account/get（纯 GET，兼容纯 Cookie 未加密请求）=====
-            try:
-                resp0 = await client.get(
-                    "https://music.163.com/api/nuser/account/get",
-                    headers=headers,
-                )
-                if resp0.status_code == 200:
-                    d = resp0.json()
-                    if isinstance(d, dict):
-                        code0 = d.get("code")
-                        profile = (d.get("profile") or {})
-                        account = (d.get("account") or {})
-                        if code0 == 200 and ((profile and profile.get("userId")) or (account and account.get("id"))):
-                            nickname = profile.get("nickname", "未知") if isinstance(profile, dict) else "未知"
-                            user_id = profile.get("userId") if isinstance(profile, dict) else None
-                            vip_type = (profile.get("vipType", 0) if isinstance(profile, dict) else 0) or 0
-                            vip_label = {0: "非会员", 1: "VIP", 10: "黑胶VIP", 11: "SVIP"}.get(vip_type, f"Type{vip_type}")
-                            info = {"nickname": nickname, "userId": user_id, "vipType": vip_type, "vipLabel": vip_label}
-                            _COOKIE_STATUS["valid"] = True
-                            _COOKIE_STATUS["last_check"] = now
-                            _COOKIE_STATUS["nickname"] = nickname
-                            if user_id is not None:
-                                _COOKIE_STATUS["userId"] = user_id
-                            _COOKIE_STATUS["vipType"] = vip_type
-                            logger.info(f"[点歌] 网易云Cookie有效 (api/nuser/account)｜用户: {nickname}, 会员: {vip_label}")
-                            return (True, info)
-                        if code0 != 200:
-                            logger.debug(f"[点歌] /api/nuser/account/get 未通过: code={code0}, body={str(d)[:200]}")
-            except Exception as _e0:
-                logger.debug(f"[点歌] /api/nuser/account/get 检测异常: {_e0}")
-
-            # ===== 主检测接口2：POST /api/s/user/account（纯表单，不走 weapi 加密路径）=====
-            resp = await client.post(
-                "https://music.163.com/api/s/user/account",
-                headers=headers,
-                data={"csrf_token": ""},
+            resp = await client.get(
+                f"{base}/login/status",
+                params={"cookie": cookie},
             )
-            if resp.status_code == 200:
-                try:
-                    data = resp.json()
-                    code = data.get("code") if isinstance(data, dict) else None
-                    if code == 200:
-                        profile = (data.get("profile") or {}) if isinstance(data, dict) else {}
-                        account = (data.get("account") or {}) if isinstance(data, dict) else {}
-                        if (profile and profile.get("userId")) or (account and account.get("id")):
-                            nickname = profile.get("nickname", "未知") if isinstance(profile, dict) else "未知"
-                            user_id = profile.get("userId") if isinstance(profile, dict) else None
-                            vip_type = (profile.get("vipType", 0) if isinstance(profile, dict) else 0) or 0
-                            vip_label = {0: "非会员", 1: "VIP", 10: "黑胶VIP", 11: "SVIP"}.get(vip_type, f"Type{vip_type}")
-                            info = {
-                                "nickname": nickname,
-                                "userId": user_id,
-                                "vipType": vip_type,
-                                "vipLabel": vip_label,
-                            }
-                            _COOKIE_STATUS["valid"] = True
-                            _COOKIE_STATUS["last_check"] = now
-                            _COOKIE_STATUS["nickname"] = nickname
-                            if user_id is not None:
-                                _COOKIE_STATUS["userId"] = user_id
-                            _COOKIE_STATUS["vipType"] = vip_type
-                            logger.info(f"[点歌] 网易云Cookie有效 (api/s/user/account)｜用户: {nickname}, 会员: {vip_label}")
-                            return (True, info)
-                        else:
-                            # code=200 但没有 userId —— 这种通常是 Cookie 没带 MUSIC_U 但仍可匿名请求
-                            logger.debug(f"[点歌] /api/s/user/account code=200 但无userId: {str(data)[:200]}")
-                    elif code == 301 or code == 302:
-                        _COOKIE_STATUS["valid"] = False
-                        _COOKIE_STATUS["last_check"] = now
-                        logger.warning(f"[点歌] 网易云Cookie已过期或无效 (code={code})")
-                        return (False, None)
-                    else:
-                        logger.debug(f"[点歌] /api/s/user/account 非200: code={code}, body={str(data)[:200]}")
-                except Exception as _e2:
-                    logger.debug(f"[点歌] /api/s/user/account JSON解析异常: {_e2}")
+            if resp.status_code != 200:
+                logger.debug(f"[点歌] /login/status HTTP {resp.status_code}")
+                return (None, None)
 
-            # ===== 接口3（最可靠）：用 pyncm 自己的 login.GetLoginStatus —— 因为 pyncm session 已经
-            # 是我们替换好的标准 requests.Session + 完整 Cookie jar + jar 已写入 MUSIC_U，
-            # 它内部走 WeAPI 加密路径，这是网易云服务器真正接受的方式。
-            if PYNCM_AVAILABLE and login is not None:
-                import asyncio as _aio
-                loop = _aio.get_event_loop()
-                try:
-                    status_data = await loop.run_in_executor(None, login.GetLoginStatus)
-                except Exception as _pyncm_err:
-                    msg = str(_pyncm_err)
-                    logger.debug(f"[点歌] pyncm登录态接口失败: {msg[:200]}")
-                    status_data = None
-                if (isinstance(status_data, dict)
-                        and status_data.get("data")
-                        and isinstance(status_data["data"], dict)):
-                    dd = status_data["data"]
-                    account = dd.get("account") or {}
-                    profile = dd.get("profile") or {}
-                    if (isinstance(account, dict) and account.get("id")) or (
-                        isinstance(profile, dict) and profile.get("userId")
-                    ):
-                        nickname = (profile.get("nickname", "未知")
-                                    if isinstance(profile, dict) else "未知")
-                        user_id = profile.get("userId") if isinstance(profile, dict) else None
-                        vip_type = (profile.get("vipType", 0)
-                                    if isinstance(profile, dict) else 0) or 0
-                        vip_label = {
-                            0: "非会员", 1: "VIP", 10: "黑胶VIP", 11: "SVIP"
-                        }.get(vip_type, f"Type{vip_type}")
-                        info = {
-                            "nickname": nickname,
-                            "userId": user_id,
-                            "vipType": vip_type,
-                            "vipLabel": vip_label,
-                        }
-                        _COOKIE_STATUS["valid"] = True
-                        _COOKIE_STATUS["last_check"] = now
-                        _COOKIE_STATUS["nickname"] = nickname
-                        if user_id is not None:
-                            _COOKIE_STATUS["userId"] = user_id
-                        _COOKIE_STATUS["vipType"] = vip_type
-                        logger.info(
-                            f"[点歌] 网易云Cookie有效 (pyncm)｜用户: {nickname}, 会员: {vip_label}"
-                        )
-                        return (True, info)
+            ds = resp.json()
+            if not isinstance(ds, dict):
+                return (None, None)
 
-            # 尝试备用检测：搜索一首需要VIP的歌曲
-            resp2 = await client.get(
-                "https://music.163.com/api/search/get/web",
-                params={"s": "阴天", "type": 1, "limit": 1},
-                headers=headers,
-            )
-            if resp2.status_code == 200:
-                try:
-                    data2 = resp2.json()
-                    if data2.get("result") and data2["result"].get("songs"):
-                        # 能搜索说明Cookie有效
-                        _COOKIE_STATUS["valid"] = True
-                        _COOKIE_STATUS["last_check"] = now
-                        logger.info("[点歌] 网易云Cookie有效 (搜索验证通过，但未识别到vipType)")
-                        return (True, {"vipLabel": "未知", "nickname": "未知"})
-                except Exception:
-                    pass
+            # NeteaseCloudMusicApi 返回结构：{"data": {"code":..., "account":..., "profile":...}}
+            inner = ds.get("data") if isinstance(ds.get("data"), dict) else ds
+            code_s = inner.get("code")
+            profile_s = (inner.get("profile") or {}) if isinstance(inner, dict) else {}
+            account_s = (inner.get("account") or {}) if isinstance(inner, dict) else {}
 
-            logger.debug(f"[点歌] Cookie检测请求返回异常: HTTP {resp.status_code}")
+            if code_s == 200 and ((profile_s and profile_s.get("userId")) or (account_s and account_s.get("id"))):
+                nickname = profile_s.get("nickname", "未知") if isinstance(profile_s, dict) else "未知"
+                user_id = profile_s.get("userId") if isinstance(profile_s, dict) else None
+                vip_type = (profile_s.get("vipType", 0) if isinstance(profile_s, dict) else 0) or 0
+                vip_label = {0: "非会员", 1: "VIP", 10: "黑胶VIP", 11: "SVIP"}.get(vip_type, f"Type{vip_type}")
+                info = {"nickname": nickname, "userId": user_id, "vipType": vip_type, "vipLabel": vip_label}
+                _COOKIE_STATUS["valid"] = True
+                _COOKIE_STATUS["last_check"] = now
+                _COOKIE_STATUS["nickname"] = nickname
+                if user_id is not None:
+                    _COOKIE_STATUS["userId"] = user_id
+                _COOKIE_STATUS["vipType"] = vip_type
+                logger.info(f"[点歌] 网易云Cookie有效 (API)｜用户: {nickname}, 会员: {vip_label}")
+                return (True, info)
+
+            # code=200 但 profile 为空 → API 未识别 Cookie（该部署可能不转发 Cookie 给 /login/status）
+            # 不标记为过期（搜索/下载仍可用），仅返回未知状态
+            logger.debug(f"[点歌] /login/status 未返回用户信息 (code={code_s})，API可能未转发Cookie")
             return (None, None)
+
     except Exception as e:
         logger.warning(f"[点歌] Cookie有效性检测异常: {e}")
         return (None, None)
@@ -1543,40 +1397,30 @@ async def _ncm_search(query: str, limit: int = 5) -> List[Dict]:
 
 
 async def _ncm_search_direct(query: str, limit: int = 5) -> List[Dict]:
-    """直接使用HTTP请求搜索网易云音乐"""
+    """使用 NeteaseCloudMusicApi 代理搜索网易云音乐"""
     try:
         import httpx
-        url = "https://music.163.com/api/search/get/web"
+        base = _get_music_api_base()
         params = {
-            "s": query,
-            "type": 1,
+            "keywords": query,
             "limit": limit,
-            "offset": 0,
         }
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) "
-                          "Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://music.163.com/",
-            "Content-Type": "application/x-www-form-urlencoded",
-        }
-        # 带上Cookie以获取更准确的搜索结果
         cookie = _get_ncm_cookie()
         if cookie:
-            headers["Cookie"] = cookie
+            params["cookie"] = cookie
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(url, params=params, headers=headers)
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            resp = await client.get(f"{base}/search", params=params)
             if resp.status_code != 200:
-                logger.error(f"[点歌] 直接HTTP搜索失败: HTTP {resp.status_code}")
+                logger.error(f"[点歌] API搜索失败: HTTP {resp.status_code}")
                 return []
-            
+
             try:
                 result = resp.json()
             except Exception:
-                logger.error(f"[点歌] 直接HTTP搜索返回非JSON: {resp.text[:100]}")
+                logger.error(f"[点歌] API搜索返回非JSON: {resp.text[:100]}")
                 return []
-            
+
             songs = result.get("result", {}).get("songs", [])
             parsed = []
             for s in songs:
@@ -1588,12 +1432,12 @@ async def _ncm_search_direct(query: str, limit: int = 5) -> List[Dict]:
                     "ncm_id": s.get("id"),
                     "name": s.get("name", ""),
                     "artist": artist_name,
-                    "album": s.get("album", {}).get("name", "") if isinstance(s.get("album"), dict) else s.get("al", {}).get("name", ""),
+                    "album": s.get("album", {}).get("name", "") if isinstance(s.get("album"), dict) else (s.get("al", {}).get("name", "") if isinstance(s.get("al"), dict) else ""),
                     "duration": s.get("duration", 0) or s.get("dt", 0),
                 })
             return parsed
     except Exception as e:
-        logger.error(f"[点歌] 直接HTTP搜索异常: {e}")
+        logger.error(f"[点歌] API搜索异常: {e}")
         return []
 
 
@@ -1603,104 +1447,44 @@ _QUALITY_FALLBACK_CHAIN = ["hires", "lossless", "exhigh", "higher", "standard"]
 
 async def _ncm_download(song_id: int, song_name: str, artist: str, quality: str = None) -> Optional[tuple]:
     """
-    下载网易云音乐到本地（优先直接HTTP请求，更稳定；失败再试pyncm）
-    高音质下载失败时自动降级到更低音质
+    下载网易云音乐到本地（优先通过API代理，失败再试pyncm）
     返回 (file_path, actual_quality) 或 None
     """
     target_quality = _get_effective_quality(quality)
 
-    # 构建降级链：从用户请求的音质开始，逐级降级
-    start_idx = _QUALITY_FALLBACK_CHAIN.index(target_quality) if target_quality in _QUALITY_FALLBACK_CHAIN else 3
-    fallback_chain = _QUALITY_FALLBACK_CHAIN[start_idx:]
-
-    last_error = None
-    _last_fee: Optional[int] = None  # 记录官方/备用API返回的 fee 字段，用于下载失败后诊断（Cookie vs 版权锁死）
+    _last_fee: Optional[int] = None
     has_cookie = False
-    for idx, q in enumerate(fallback_chain):
-        if idx > 0:
-            logger.warning(f"[点歌] 音质「{QUALITY_LABELS.get(target_quality, target_quality)}」下载失败，"
-                           f"降级尝试「{QUALITY_LABELS.get(q, q)}」")
-        direct_result = await _ncm_download_direct(song_id, song_name, artist, q)
-        # 兼容老返回（None / Path）和新返回（Tuple[Path|None, dict]）
-        path: Optional[Path] = None
-        ctx: dict = {}
-        if isinstance(direct_result, tuple) and len(direct_result) >= 2:
-            path, ctx = direct_result[0], direct_result[1] or {}
-        else:
-            path = direct_result
-            ctx = {}
-        if isinstance(ctx, dict):
-            ctx_fee = ctx.get("fee")
-            if ctx_fee is not None:
-                try:
-                    fi = int(ctx_fee)
-                    if _last_fee is None or fi > int(_last_fee):
-                        _last_fee = fi
-                except Exception:
-                    pass
-            if not has_cookie and ctx.get("has_cookie"):
-                has_cookie = True
-        if path:
-            if q != target_quality:
-                logger.info(f"[点歌] 已降级下载: {target_quality} → {q}")
-            return (path, q)
+    last_error = None
 
-        # 直接HTTP失败，尝试 pyncm 作为备用（注意 pyncm 的 EAPI 容易被风控拦截，成功率较低）
-        # 特别：如果 pyncm 的 session 仍为 dict 形态（没替换成真 HTTP 客户端），
-        # 就直接跳过 pyncm，避免 WeAPI request failed 刷屏
-        if PYNCM_AVAILABLE and not _PYNCM_DICT_SESSION:
+    # 方式1：API代理下载（内部已包含音质降级链）
+    direct_result = await _ncm_download_direct(song_id, song_name, artist, target_quality)
+    path: Optional[Path] = None
+    ctx: dict = {}
+    if isinstance(direct_result, tuple) and len(direct_result) >= 2:
+        path, ctx = direct_result[0], direct_result[1] or {}
+    else:
+        path = direct_result
+    if isinstance(ctx, dict):
+        ctx_fee = ctx.get("fee")
+        if ctx_fee is not None:
             try:
-                # pyncm 的 GetTrackAudio 使用 EAPI（加密接口），风控更严
-                # 先记录一下 pyncm session 当前 cookies，辅助定位是否登录态缺失
-                _sess = GetCurrentSession() if PYNCM_AVAILABLE else None
-                if _sess:
-                    # 兼容 pyncm 不同版本：session 可能是 dict 或 requests.Session 对象
-                    _cookie_str = ""
-                    _cookie_keys: list = []
-                    if isinstance(_sess, dict):
-                        _cookie_str = str((_sess.get("headers") or {}).get("Cookie", "") or "")
-                        _c = _sess.get("cookies")
-                        if isinstance(_c, dict):
-                            _cookie_keys = list(_c.keys())
-                        elif hasattr(_c, "keys"):
-                            try:
-                                _cookie_keys = list(_c.keys())
-                            except Exception:
-                                pass
-                    else:
-                        _h = getattr(_sess, "headers", None)
-                        if isinstance(_h, dict):
-                            _cookie_str = str(_h.get("Cookie", "") or "")
-                        elif hasattr(_h, "get"):
-                            try:
-                                _cookie_str = str(_h.get("Cookie", "") or "")
-                            except Exception:
-                                pass
-                        _c = getattr(_sess, "cookies", None)
-                        if _c is not None:
-                            try:
-                                _cookie_keys = list(_c.keys())
-                            except Exception:
-                                _cookie_keys = []
-                    _has_music_u = any(
-                        k.strip().lower() == "music_u"
-                        for k in _cookie_keys + [
-                            item.split("=", 1)[0] if "=" in item else ""
-                            for item in _cookie_str.split(";")
-                        ]
-                    )
-                    logger.debug(f"[点歌] pyncm会话MUSIC_U状态: {_has_music_u}")
+                _last_fee = int(ctx_fee)
+            except Exception:
+                pass
+        has_cookie = bool(ctx.get("has_cookie"))
+    if path:
+        return (path, target_quality)
 
+    # 方式2：pyncm 兜底（EAPI加密，风控较严，作为最后手段）
+    if PYNCM_AVAILABLE and not _PYNCM_DICT_SESSION:
+        start_idx = _QUALITY_FALLBACK_CHAIN.index(target_quality) if target_quality in _QUALITY_FALLBACK_CHAIN else 3
+        pyncm_chain = _QUALITY_FALLBACK_CHAIN[start_idx:]
+        for q in pyncm_chain:
+            try:
                 if track and hasattr(track, 'GetTrackAudio'):
-                    audio_data = track.GetTrackAudio(
-                        song_ids=song_id,
-                        level=q,
-                    )
+                    audio_data = track.GetTrackAudio(song_ids=song_id, level=q)
                 else:
-                    audio_data = ncm_apis.track.GetTrackAudio(
-                        song_ids=song_id,
-                        level=q,
-                    )
+                    audio_data = ncm_apis.track.GetTrackAudio(song_ids=song_id, level=q)
                 if isinstance(audio_data, dict):
                     data_list = audio_data.get("data", [])
                     if data_list and data_list[0].get("url"):
@@ -1710,29 +1494,16 @@ async def _ncm_download(song_id: int, song_name: str, artist: str, quality: str 
                                 logger.info(f"[点歌] 已降级下载(pyncm): {target_quality} → {q}")
                             return (path, q)
                     elif data_list:
-                        logger.warning(
-                            f"[点歌] pyncm返回空URL｜版权信息: fee={data_list[0].get('fee')}, st={data_list[0].get('st')}"
-                        )
+                        logger.warning(f"[点歌] pyncm返回空URL｜fee={data_list[0].get('fee')}, st={data_list[0].get('st')}")
             except Exception as e:
                 last_error = e
                 err_msg = str(e)
                 if "EAPI" in err_msg or "Expecting value" in err_msg or "column 1" in err_msg:
-                    # EAPI 失败时尝试诊断：抓 pyncm session 最近一次请求的返回码
-                    extra = ""
-                    try:
-                        _sess2 = GetCurrentSession() if PYNCM_AVAILABLE else None
-                        if _sess2:
-                            # pyncm 使用 requests.Session，如果刚刚请求过通常会有历史
-                            pass
-                    except Exception:
-                        pass
-                    logger.warning(
-                        f"[点歌] pyncm下载({q})跳过（EAPI返回非JSON，疑似风控或登录态未正确加载{extra}）"
-                    )
+                    logger.warning(f"[点歌] pyncm下载({q})跳过（EAPI返回非JSON，疑似风控）")
                 else:
                     logger.warning(f"[点歌] pyncm下载({q})失败: {e}")
 
-    logger.error(f"[点歌] 所有音质下载均失败 (song_id={song_id}, last_error={last_error})")
+    logger.error(f"[点歌] 所有下载方式均失败 (song_id={song_id}, last_error={last_error})")
 
     # 所有音质都失败时，检测 Cookie 是否过期
     cookie_valid_tuple = await _check_cookie_validity()
@@ -1787,231 +1558,85 @@ def _build_ncm_client():
 
 
 async def _ncm_download_direct(song_id: int, song_name: str, artist: str, quality: str = None) -> Tuple[Optional[Path], dict]:
-    """直接使用HTTP请求下载网易云音乐（同一会话，避免CDN 403）
+    """通过 NeteaseCloudMusicApi 代理获取播放URL并下载
 
     返回 (audio_path_or_None, ctx):
-        ctx 是 dict，目前包含:
-            - fee: Optional[int]  — 官方/备用API返回的歌曲 fee 字段（供外层诊断）
+        ctx 包含:
+            - fee: Optional[int]  — 歌曲 fee 字段（供外层诊断）
             - has_cookie: bool    — 本次请求是否携带了 Cookie
             - reason: str         — 简单说明（"ok" / "no_url" / "html_not_audio"）
     """
     effective_quality = _get_effective_quality(quality)
-    quality_map = {"standard": 128000, "higher": 192000, "exhigh": 320000, "lossless": 0, "hires": 0}
-    br = quality_map.get(effective_quality, 128000)
-
     has_cookie = bool(_get_ncm_cookie())
     cookie_str = _get_ncm_cookie()
     ctx_fee: Optional[int] = None
     ctx_reason = "no_url"
 
-    def _update_fee_from_data(data0) -> None:
-        """从 data[0] 对象中提取 fee 并更新 ctx_fee（永远取最大的 fee 值）"""
-        nonlocal ctx_fee
-        try:
-            if isinstance(data0, dict):
-                f = data0.get("fee")
-                if f is not None:
-                    try:
-                        fi = int(f)
-                    except Exception:
-                        return
-                    if ctx_fee is None or fi > ctx_fee:
-                        ctx_fee = fi
-        except Exception:
-            pass
+    logger.info(f"[点歌] 开始下载({has_cookie and '带Cookie' or '无Cookie'}): {song_name} - {artist} (id={song_id}, level={effective_quality})")
 
-    if has_cookie:
-        logger.info(f"[点歌] 开始下载(带Cookie): {song_name} - {artist} (id={song_id}, br={br})")
-    else:
-        logger.info(f"[点歌] 开始下载(无Cookie): {song_name} - {artist} (id={song_id}, br={br})")
+    base = _get_music_api_base()
+    import httpx
 
-    import httpx as _httpx
-    client = _build_ncm_client()
-    audio_url = None
-    try:
-        # 先访问首页和歌曲页，建立正常浏览会话（CDN校验用）
-        try:
-            await client.get("https://music.163.com/")
-            await client.get(f"https://music.163.com/song?id={song_id}")
-        except Exception:
-            pass
-
-        # 构建带Cookie的公共请求头
-        api_headers = {}
+    async def _fetch_url(level: str) -> Tuple[Optional[str], Optional[dict]]:
+        """从API获取播放URL，返回 (url, data0)"""
+        params = {"id": str(song_id), "level": level}
         if cookie_str:
-            api_headers["Cookie"] = cookie_str
-
-        # 方式1：官方API获取URL（用 Request 对象直接发送，绕过 cookie jar 覆盖）
-        try:
-            req = _httpx.Request(
-                "GET",
-                "https://music.163.com/api/song/enhance/player/url",
-                params={"ids": f'[{song_id}]', "br": br, "csrf_token": ""},
-                headers=api_headers,
-            )
-            resp = await client.send(req)
-            if resp.status_code == 200:
-                result = resp.json()
-                result_code = result.get("code", -1)
-                data_list = result.get("data", [])
-                if data_list and data_list[0].get("url"):
-                    audio_url = data_list[0]["url"]
-                    actual_br = data_list[0].get("br", 0)
-                    logger.info(f"[点歌] 官方API获取URL成功 (br={br}, actual_br={actual_br})")
-                else:
-                    # 详细记录版权字段，便于判断是Cookie失效还是真版权受限
-                    if data_list:
+            params["cookie"] = cookie_str
+        # /song/url/v1 在某些部署中不可用，回退到 /song/url
+        for endpoint in ("/song/url/v1", "/song/url"):
+            try:
+                async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as c:
+                    resp = await c.get(f"{base}{endpoint}", params=params)
+                    if resp.status_code != 200:
+                        continue
+                    d = resp.json()
+                    data_list = d.get("data", [])
+                    if data_list and isinstance(data_list[0], dict):
                         d0 = data_list[0]
-                        fee = d0.get("fee")
-                        st = d0.get("st")
-                        payed = d0.get("payed")
-                        level = d0.get("level")
-                        per_song_code = d0.get("code")  # data[0].code（注意不是外层 result.code）
-                        cannot_reason = None
-                        try:
-                            fp = (d0.get("freeTrialPrivilege") or {}) if isinstance(d0, dict) else {}
-                            cannot_reason = fp.get("cannotListenReason") if isinstance(fp, dict) else None
-                        except Exception:
-                            cannot_reason = None
-                        _update_fee_from_data(d0)
-                        extra = ""
-                        if per_song_code == -110:
-                            extra += "｜per_song_code=-110(版权不足/需要付费)"
-                        if cannot_reason is not None:
-                            extra += f"｜cannotListenReason={cannot_reason}"
-                        if payed == 0 and has_cookie:
-                            extra += "｜服务器未识别到付费会话(payed=0)"
-                        logger.warning(
-                            f"[点歌] 官方API返回空URL (code={result_code}, has_cookie={has_cookie})"
-                            f"｜版权信息: fee={fee}, st={st}, payed={payed}, level={level}, br={br}{extra}"
-                        )
-                        logger.debug(f"[点歌] API返回data完整详情: {d0}")
-                    else:
-                        logger.warning(f"[点歌] 官方API返回空URL且data为空 (code={result_code}, has_cookie={has_cookie})")
-        except Exception as e:
-            logger.error(f"[点歌] 官方API获取URL失败: {e}")
-
-        # 方式2：备用API v1
-        if not audio_url:
-            try:
-                req = _httpx.Request(
-                    "GET",
-                    "https://music.163.com/api/song/enhance/player/url/v1",
-                    params={"ids": f'[{song_id}]', "level": effective_quality, "encodeType": "mp3", "csrf_token": ""},
-                    headers=api_headers,
-                )
-                resp = await client.send(req)
-                if resp.status_code == 200:
-                    result = resp.json()
-                    result_code = result.get("code", -1)
-                    data_list = result.get("data", [])
-                    if data_list and data_list[0].get("url"):
-                        audio_url = data_list[0]["url"]
-                        logger.info(f"[点歌] 备用API获取URL成功 (level={effective_quality})")
-                    else:
-                        if data_list:
-                            d0 = data_list[0]
-                            fee = d0.get("fee")
-                            st = d0.get("st")
-                            _update_fee_from_data(d0)
-                            logger.warning(
-                                f"[点歌] 备用API返回空URL (code={result_code})"
-                                f"｜版权信息: fee={fee}, st={st}, level={d0.get('level')}"
-                            )
-                        else:
-                            logger.warning(f"[点歌] 备用API返回空URL且data为空 (code={result_code})")
+                        url = d0.get("url")
+                        if url:
+                            logger.info(f"[点歌] API获取URL成功 ({endpoint}, level={level}, br={d0.get('br')}, actual_level={d0.get('level')})")
+                            return url, d0
+                        nonlocal ctx_fee
+                        f = d0.get("fee")
+                        if f is not None:
+                            try:
+                                fi = int(f)
+                                if ctx_fee is None or fi > ctx_fee:
+                                    ctx_fee = fi
+                            except Exception:
+                                pass
             except Exception as e:
-                logger.error(f"[点歌] 备用API下载失败: {e}")
+                logger.warning(f"[点歌] API获取URL异常 {endpoint}: {e}")
+        return None, None
 
-        # 方式2.5：POST player/url（模拟网页播放页真实请求：/api/song/enhance/player/url + immerseType=1 + realIP）
-        # 注意：不能用 /weapi/ 那个路径！那需要加密 payload（pyncm 的 EAPI/WeAPI 加密流程），
-        # 直接发纯表单到 /weapi/ 会被返回 460/HTML 而不是 JSON。
-        if not audio_url:
-            try:
-                post_headers = dict(api_headers)
-                post_headers["Content-Type"] = "application/x-www-form-urlencoded"
-                post_headers["Origin"] = "https://music.163.com"
-                # 从已有 cookie 中提取 __csrf，没有就留空
-                csrf = ""
-                if cookie_str:
-                    for _item in cookie_str.split(";"):
-                        _item = _item.strip()
-                        if _item.lower().startswith("__csrf") and "=" in _item:
-                            csrf = _item.split("=", 1)[1].strip()
-                            break
-                req = _httpx.Request(
-                    "POST",
-                    f"https://music.163.com/api/song/enhance/player/url?csrf_token={csrf}",
-                    data={
-                        "ids": f"[{song_id}]",
-                        "br": str(br),
-                        "level": effective_quality,
-                        "encodeType": "mp3",
-                        "immerseType": "1",
-                        "withCredentials": "true",
-                        "realIP": "",
-                        "csrf_token": csrf,
-                    },
-                    headers=post_headers,
-                )
-                resp = await client.send(req)
-                raw_text = resp.text if resp is not None else ""
-                preview = (raw_text or "")[:200].replace("\n", " ")
-                if resp.status_code == 200:
-                    try:
-                        result = resp.json()
-                    except Exception as json_err:
-                        logger.error(
-                            f"[点歌] PlayerURL_POST返回非JSON (HTTP {resp.status_code}): "
-                            f"响应预览: {preview[:120]}｜{json_err}"
-                        )
-                        result = None
-                    if result:
-                        result_code = result.get("code", -1)
-                        data_list = result.get("data", [])
-                        if data_list and data_list[0].get("url"):
-                            audio_url = data_list[0]["url"]
-                            actual_br = data_list[0].get("br", 0)
-                            logger.info(f"[点歌] PlayerURL_POST获取URL成功 (level={effective_quality}, actual_br={actual_br})")
-                        else:
-                            if data_list:
-                                d0 = data_list[0]
-                                fee = d0.get("fee")
-                                st = d0.get("st")
-                                _update_fee_from_data(d0)
-                                logger.warning(
-                                    f"[点歌] PlayerURL_POST返回空URL (code={result_code})"
-                                    f"｜版权信息: fee={fee}, st={st}, level={d0.get('level')}, payed={d0.get('payed')}"
-                                )
-                            else:
-                                logger.warning(f"[点歌] PlayerURL_POST返回空URL且data为空 (code={result_code})")
-                else:
-                    logger.error(
-                        f"[点歌] PlayerURL_POST请求失败 HTTP {resp.status_code}: 响应预览: {preview[:120]}"
-                    )
-            except Exception as e:
-                logger.error(f"[点歌] PlayerURL_POST获取URL异常: {e}")
+    # 从目标音质开始逐级降级（服务端可能因版权/账号限制只返回低音质URL）
+    start_idx = _QUALITY_FALLBACK_CHAIN.index(effective_quality) if effective_quality in _QUALITY_FALLBACK_CHAIN else 2
+    chain = _QUALITY_FALLBACK_CHAIN[start_idx:]
 
-        # 方式3：外链接口
-        if not audio_url:
-            try:
-                audio_url = f"https://music.163.com/song/media/outer/url?id={song_id}.mp3"
-                logger.info(f"[点歌] 尝试外链接口下载")
-            except Exception as e:
-                logger.error(f"[点歌] 外链接口下载失败: {e}")
+    audio_url = None
+    audio_data0 = None
+    for q in chain:
+        url, d0 = await _fetch_url(q)
+        if url:
+            audio_url = url
+            audio_data0 = d0
+            if q != effective_quality:
+                logger.info(f"[点歌] 音质降级: {effective_quality} → {q}")
+            break
 
-        # 获取到URL后，用同一会话下载（CDN URL 无需 Cookie）
-        if audio_url:
-            path = await _download_with_client(client, audio_url, song_name, artist, effective_quality)
-            if path:
-                ctx_reason = "ok"
-                return (path, {"fee": ctx_fee, "has_cookie": has_cookie, "reason": ctx_reason})
-            ctx_reason = "html_not_audio"
+    if not audio_url:
+        logger.error(f"[点歌] API未返回播放URL (song_id={song_id}, has_cookie={has_cookie})")
+        return (None, {"fee": ctx_fee, "has_cookie": has_cookie, "reason": ctx_reason})
 
-    finally:
-        await client.aclose()
+    # 下载音频（CDN URL 无需 163.com 会话）
+    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+        path = await _download_with_client(client, audio_url, song_name, artist, effective_quality)
+        if path:
+            return (path, {"fee": ctx_fee, "has_cookie": has_cookie, "reason": "ok"})
 
-    logger.error(f"[点歌] 所有下载方式均失败 (song_id={song_id}, has_cookie={has_cookie})")
+    ctx_reason = "html_not_audio"
+    logger.error(f"[点歌] 下载音频失败 (song_id={song_id}, has_cookie={has_cookie})")
     return (None, {"fee": ctx_fee, "has_cookie": has_cookie, "reason": ctx_reason})
 
 
