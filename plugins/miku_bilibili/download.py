@@ -10,7 +10,7 @@ Miku B站插件 - 下载服务模块
 import re
 import asyncio
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 
 from curl_cffi import requests as curl_requests
 from nonebot.adapters.onebot.v11 import Bot, MessageEvent
@@ -47,8 +47,12 @@ def format_file_size(size_bytes: int) -> str:
 VIDEO_CACHE_DIR = CACHE_DIR / "video_cache"
 VIDEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-# 自动下载并发信号量（参考日志中的信号量机制）
+# 自动下载并发信号量（不同视频之间最多 2 个并发）
 _auto_download_semaphore = asyncio.Semaphore(2)
+
+# 进行中下载任务表（key: "BV号_P页码"）
+# 防止同一视频被并发重复下载时，多个 yt-dlp 进程写同一个 .part 临时文件导致文件损坏
+_inflight_downloads: Dict[str, "asyncio.Task"] = {}
 
 
 # ============================================================
@@ -372,7 +376,34 @@ async def get_video_cover_data(bvid: str) -> Optional[str]:
 
 async def auto_download_video(bvid: str, page: int = 1) -> Optional[str]:
     """
-    解析成功后自动下载视频（后台静默模式）
+    解析成功后自动下载视频（后台静默模式）- 带并发去重
+    - 同一视频（BV号+页码）并发请求时只下载一次，其余调用者等待并复用结果
+    - 不同视频之间使用信号量控制并发
+    - 下载到 VIDEO_CACHE_DIR，文件名用 BV号_P页码.mp4
+    - 命中缓存直接返回路径
+    - 失败返回 None
+    """
+    key = f"{bvid}_P{page}"
+    existing = _inflight_downloads.get(key)
+    if existing is not None and not existing.done():
+        logger.info(f"[miku_bilibili] BV{bvid} P{page} 正在下载中，等待复用进行中的下载结果")
+        try:
+            return await existing
+        except Exception:
+            return None
+
+    task = asyncio.create_task(_auto_download_video_impl(bvid, page))
+    _inflight_downloads[key] = task
+    try:
+        return await task
+    finally:
+        if _inflight_downloads.get(key) is task:
+            _inflight_downloads.pop(key, None)
+
+
+async def _auto_download_video_impl(bvid: str, page: int = 1) -> Optional[str]:
+    """
+    实际执行自动下载（仅供 auto_download_video 内部调用）
     - 使用信号量控制并发
     - 下载到 VIDEO_CACHE_DIR，文件名用 BV号_P页码.mp4
     - 命中缓存直接返回路径
