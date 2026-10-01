@@ -44,7 +44,7 @@ except ImportError:
 
 __plugin_meta__ = PluginMetadata(
     name="Miku点歌",
-    description="本地+网易云点歌，支持多种音质，自动下载缓存",
+    description="本地+网易云+QQ音乐点歌，支持多种音质，自动下载缓存",
     usage="点歌 <歌名> [音质]，音质：标准/高清/极高/无损/母带",
     type="application",
     supported_adapters={"~onebot.v11"},
@@ -188,6 +188,13 @@ _TEMPLATE = (
     "  # 获取方式：浏览器登录music.163.com → F12 → Application → Cookies\n"
     "  # 复制 MUSIC_U 的值粘贴到这里\n"
     "  ncm_cookie: \"\"\n"
+    "  # 是否启用QQ音乐音源（网易云未找到或下载失败时自动回退）\n"
+    "  enable_qqmusic: true\n"
+    "  # QQ音乐 API 基址\n"
+    "  qqmusic_api_base: \"https://qqmusicapi.aikun-bili.top\"\n"
+    "  # QQ音乐Cookie（QQ音乐风控拦截机房IP的匿名取链，需真实登录态才能取到播放链接）\n"
+    "  # 获取方式：浏览器登录 y.qq.com → F12 → Application → Cookies → 复制整串Cookie粘贴到这里\n"
+    "  qqmusic_cookie: \"\"\n"
     "  # 音频文件最大保留天数（超过此天数的缓存音频将被自动清理）\n"
     "  max_retention_days: 30\n"
     "  # 是否启用过期音频自动清理（启动时和每日8点各执行一次）\n"
@@ -209,12 +216,15 @@ _cfg = config_manager.register_plugin(
         "ncm_quality": "standard",
         "ncm_search_limit": 5,
         "ncm_cookie": "",
+        "enable_qqmusic": True,
+        "qqmusic_api_base": "https://qqmusicapi.aikun-bili.top",
+        "qqmusic_cookie": "",
         "max_retention_days": 30,
         "enable_cleanup": True,
         "cleanup_time": "08:00",
     },
     template_str=_TEMPLATE,
-    description="点歌插件配置（本地+网易云）",
+    description="点歌插件配置（本地+网易云+QQ音乐）",
 )
 
 
@@ -230,6 +240,26 @@ def _conf(key: str, default=None):
 def _get_music_api_base() -> str:
     """网易云 API 代理基址（NeteaseCloudMusicApi Enhanced）"""
     return str(_conf("ncm_api_base", "https://musicapi.aikun-bili.top") or "").strip().rstrip("/")
+
+
+def _get_qq_api_base() -> str:
+    """QQ音乐 API 代理基址"""
+    return str(_conf("qqmusic_api_base", "https://qqmusicapi.aikun-bili.top") or "").strip().rstrip("/")
+
+
+def _is_qqmusic_enabled() -> bool:
+    """QQ音乐音源开关（同时要求已配置API基址）"""
+    raw = _conf("enable_qqmusic", True)
+    enabled = str(raw).strip().lower() not in ("false", "0", "no", "")
+    return enabled and bool(_get_qq_api_base())
+
+
+def _get_qq_cookie() -> str:
+    """获取配置的QQ音乐 Cookie 字符串（原样传给适配层）"""
+    raw = _conf("qqmusic_cookie", "")
+    if not raw:
+        return ""
+    return str(raw).strip()
 
 
 # ============================================================
@@ -1852,6 +1882,173 @@ async def _download_ncm_by_id(song_id: int, song_name: str, artist: str,
 
 
 # ============================================================
+# QQ音乐音源（网易云未命中或下载失败时回退）
+# ============================================================
+# QQ CDN 文件名前缀与音质对照（按高到低排列）
+_QQ_URL_QUALITY_MAP = [
+    ("RS0", "hires"),      # Hi-Res
+    ("F00", "lossless"),   # FLAC
+    ("M800", "exhigh"),    # 320kbps MP3
+    ("M600", "higher"),    # 192kbps
+    ("M500", "standard"),  # 128kbps MP3
+]
+
+
+def _qq_quality_from_url(url: str) -> str:
+    """从QQ CDN链接文件名前缀推断实际音质，推断失败返回 standard"""
+    try:
+        filename = str(url).rsplit("/", 1)[-1]
+        for prefix, quality in _QQ_URL_QUALITY_MAP:
+            if filename.startswith(prefix):
+                return quality
+    except Exception:
+        pass
+    return "standard"
+
+
+async def _qq_search(query: str, limit: int = 5) -> List[Dict]:
+    """搜索QQ音乐，返回与网易云搜索同构的候选列表（ncm_id → qq_id）"""
+    try:
+        import httpx
+        base = _get_qq_api_base()
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            resp = await client.get(f"{base}/search", params={"key": query, "limit": limit})
+            if resp.status_code != 200:
+                logger.error(f"[点歌] QQ音乐搜索失败: HTTP {resp.status_code}")
+                return []
+            try:
+                data = resp.json()
+            except Exception:
+                logger.error(f"[点歌] QQ音乐搜索返回非JSON: {resp.text[:100]}")
+                return []
+
+        songs = (data.get("data") or {}).get("list") or []
+        parsed = []
+        for s in songs:
+            if not isinstance(s, dict):
+                continue
+            qq_id = s.get("songmid") or s.get("songid") or ""
+            if not qq_id:
+                continue
+            singers = s.get("singer") or []
+            artist_name = "、".join(a.get("name", "") for a in singers if isinstance(a, dict)) if singers else "未知"
+            album_name = s.get("album", {}).get("name", "") if isinstance(s.get("album"), dict) else ""
+            parsed.append({
+                "qq_id": str(qq_id),
+                "name": s.get("name") or s.get("songname") or "",
+                "artist": artist_name,
+                "album": album_name,
+                "duration": s.get("interval", 0),
+            })
+        return parsed[:limit]
+    except Exception as e:
+        logger.error(f"[点歌] QQ音乐搜索异常: {e}")
+        return []
+
+
+async def _qq_download_by_id(qq_id: str, song_name: str, artist: str, album: str = "") -> Optional[Dict]:
+    """按 qq_id 从QQ音乐取播放链接并下载，成功返回与 _download_ncm_by_id 同构的结果"""
+    base = _get_qq_api_base()
+    cookie = _get_qq_cookie()
+    url = ""
+    try:
+        import httpx
+        headers = {"Cookie": cookie} if cookie else {}
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            resp = await client.get(f"{base}/getSongUrl/{qq_id}", headers=headers)
+            if resp.status_code != 200:
+                logger.error(f"[点歌] QQ音乐取链失败: HTTP {resp.status_code} (qq_id={qq_id})")
+                return None
+            data = (resp.json() or {}).get("data") or {}
+        url = str(data.get("url") or "")
+        if not url:
+            # 匿名被风控时链接藏在 playUrl.<songmid>.url，一并取出
+            play = data.get("playUrl")
+            if isinstance(play, dict):
+                for v in play.values():
+                    if isinstance(v, dict) and v.get("url"):
+                        url = str(v["url"])
+                        break
+    except Exception as e:
+        logger.error(f"[点歌] QQ音乐取链异常: {e}")
+        return None
+
+    if not url:
+        logger.warning(f"[点歌] QQ音乐未返回播放链接 (qq_id={qq_id}, has_cookie={bool(cookie)})")
+        return None
+
+    actual_quality = _qq_quality_from_url(url)
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+            path = await _download_with_client(client, url, song_name, artist, actual_quality)
+    except Exception as e:
+        logger.error(f"[点歌] QQ音乐下载异常: {e}")
+        return None
+    if not path:
+        return None
+
+    song_info = {
+        "names": [song_name],
+        "artist": artist,
+        "file": path.name,
+        "source": "qqmusic",
+        "qq_id": qq_id,
+        "album": album,
+        "quality": actual_quality,
+        "download_time": time.time(),
+    }
+    _add_song_to_library(song_info)
+
+    return {
+        "song": song_info,
+        "score": 100,
+        "matched_name": song_name,
+        "source": "qqmusic",
+        "is_new": True,
+        "was_fallback": False,
+    }
+
+
+async def _search_and_download_qq(query: str) -> Optional[Dict]:
+    """从QQ音乐搜索并下载歌曲（网易云回退源）
+    返回契约与 _search_and_download_ncm 一致：
+        None → 搜索无结果
+        {"_search_ok": True, "_download_failed": True, ...} → 找到但取链/下载失败
+        正常结果字典 → 成功
+    """
+    _SEARCH_PUNCT_RE = re.compile(r'[\s!?！？~～…・·]+$|^[\s!?！？~～…・·]+')
+    search_query = _SEARCH_PUNCT_RE.sub('', query).strip()
+    if not search_query:
+        search_query = query
+
+    qq_results = await _qq_search(search_query, limit=5)
+    if not qq_results:
+        logger.warning(f"[点歌] QQ音乐搜索无结果: {query}")
+        return None
+
+    # 匿名取链被QQ风控按IP身份一律拒绝，无Cookie时只试第一条，避免无意义请求
+    cookie = _get_qq_cookie()
+    candidates = qq_results if cookie else qq_results[:1]
+
+    for candidate in candidates:
+        result = await _qq_download_by_id(
+            candidate["qq_id"], candidate["name"], candidate["artist"],
+            album=candidate.get("album", ""),
+        )
+        if result:
+            return result
+
+    return {
+        "_search_ok": True,
+        "_download_failed": True,
+        "song_name": qq_results[0]["name"],
+        "artist": qq_results[0]["artist"],
+        "_source": "qqmusic",
+    }
+
+
+# ============================================================
 # 指令：点歌
 # ============================================================
 music_cmd = on_command(
@@ -2033,10 +2230,11 @@ async def handle_music(bot: Bot, event: MessageEvent, args: Message = CommandArg
                 await music_cmd.finish()
                 return
 
-        # ====== 第二步：本地没有，从网易云搜索下载 ======
+        # ====== 第二步：本地没有，从网易云搜索下载（失败时回退QQ音乐） ======
         enable_ncm = str(_conf("enable_ncm", True)).strip().lower() not in ("false", "0", "no", "")
+        enable_qqmusic = _is_qqmusic_enabled()
 
-        if not enable_ncm:
+        if not enable_ncm and not enable_qqmusic:
             # 列出本地部分歌名供参考
             all_names = []
             for s in songs[:10]:
@@ -2047,29 +2245,44 @@ async def handle_music(bot: Bot, event: MessageEvent, args: Message = CommandArg
             await music_cmd.finish(f"❌ 没找到「{query}」相关的歌曲\n{hint}")
             return
 
-        if not PYNCM_AVAILABLE:
-            await music_cmd.finish(
-                f"❌ 本地未找到「{query}」\n"
-                f"⚠️ 网易云搜索功能未启用（pyncm 未安装）\n"
-                f"请运行：pip install pyncm"
-            )
-            return
+        result = None
+        if enable_ncm:
+            if not PYNCM_AVAILABLE:
+                if not enable_qqmusic:
+                    await music_cmd.finish(
+                        f"❌ 本地未找到「{query}」\n"
+                        f"⚠️ 网易云搜索功能未启用（pyncm 未安装）\n"
+                        f"请运行：pip install pyncm"
+                    )
+                    return
+                logger.warning("[点歌] pyncm 未安装，跳过网易云，直接尝试QQ音乐")
+            else:
+                # 告知用户正在搜索
+                search_msg = f"🔍 本地未找到「{query}」，正在网易云搜索..."
+                if user_quality:
+                    search_msg += f"\n🎧 请求音质：{quality_label}"
+                try:
+                    await music_cmd.send(search_msg)
+                except Exception:
+                    pass
 
-        # 告知用户正在搜索
-        search_msg = f"🔍 本地未找到「{query}」，正在网易云搜索..."
-        if user_quality:
-            search_msg += f"\n🎧 请求音质：{quality_label}"
-        try:
-            await music_cmd.send(search_msg)
-        except Exception:
-            pass
+                result = await _search_and_download_ncm(query, user_quality)
 
-        result = await _search_and_download_ncm(query, user_quality)
+        # ====== 第三步：QQ音乐回退（网易云没找到或下载失败时） ======
+        if enable_qqmusic and (not result or result.get("_download_failed")):
+            try:
+                await music_cmd.send(f"🔁 网易云未能提供「{query}」，尝试QQ音乐...")
+            except Exception:
+                pass
+            qq_result = await _search_and_download_qq(query)
+            if qq_result:
+                result = qq_result
 
         # 判断是"没找到"还是"找到但下载失败"
         if not result:
             # 完全没找到
-            fail_msg = f"❌ 网易云也没找到「{query}」"
+            no_source = "网易云/QQ音乐" if enable_qqmusic else "网易云"
+            fail_msg = f"❌ {no_source}都没找到「{query}」"
             # 检测 Cookie 是否过期并提醒
             need_notify = _COOKIE_STATUS.pop("need_notify", False)
             if need_notify:
@@ -2087,6 +2300,15 @@ async def handle_music(bot: Bot, event: MessageEvent, args: Message = CommandArg
             fail_msg = f"❌ 找到「{song_name}」"
             if artist:
                 fail_msg += f" - {artist}"
+            if result.get("_source") == "qqmusic":
+                # QQ音乐源取链失败：区分是否配置了登录态
+                if _get_qq_cookie():
+                    fail_msg += "\n但QQ音乐取链失败，请检查 qqmusic_cookie 登录态是否有效"
+                else:
+                    fail_msg += "\n但QQ音乐匿名取链被风控拦截（机房IP无登录态一律拒绝）"
+                    fail_msg += "\n💡 在 bot.yaml 的 miku_music.qqmusic_cookie 填入 y.qq.com 整串Cookie后可下载"
+                await music_cmd.finish(fail_msg)
+                return
             fail_msg += "\n但网易云因版权限制无法下载"
             # 区分 Cookie 是否为真实 SVIP：
             #   - vipType in (10,11) → 服务器认了SVIP，歌曲才是版权锁死（Cookie真没问题）
@@ -2153,11 +2375,12 @@ async def handle_music(bot: Bot, event: MessageEvent, args: Message = CommandArg
             if song.get("is_cover") or result.get("is_cover"):
                 orig = song.get("original_artist") or result.get("original_artist") or "原作者"
                 info_line += f"\n🎤 该歌曲原唱（{orig}）受版权保护，已为你选择非原唱歌曲 - {artist}"
+            source_label = "QQ音乐搜索" if song.get("source") == "qqmusic" else "网易云搜索"
             if was_fallback:
-                info_line += f"\n📂 来源：网易云搜索「降级下载」"
+                info_line += f"\n📂 来源：{source_label}「降级下载」"
                 info_line += f"\n⚠️ 「{quality_label}」需要SVIP，已自动降级为「{display_quality}」"
             else:
-                info_line += f"\n📂 来源：网易云搜索"
+                info_line += f"\n📂 来源：{source_label}"
                 info_line += f"\n🎧 音质：{display_quality}"
             if is_new:
                 info_line += "\n✅ 已自动缓存到本地，下次点歌更快"
