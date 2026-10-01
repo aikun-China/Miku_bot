@@ -279,6 +279,13 @@ except Exception:
     pass
 
 
+# 事件 dump 行（nonebot.message.handle_event 以 SUCCESS 级打印的
+# “OneBot V11 <自ID> | [事件类型]: ...”）在控制台与文件日志里都会刷屏，统一丢弃。
+# 原始 record["message"] 带 loguru 颜色标签（<m>…</m>），非彩色 sink 渲染后标签被剥离，
+# 锚定开头的正则兼容两种形态，且不会误伤 handle_event 里其它 WARNING/DEBUG/ERROR 日志
+_EVENT_DUMP_RE = re.compile(r"^(?:<m>)?OneBot V11 \d+(?:</m>)?\s*\|\s*\[[\w.]+\]\s*:")
+
+
 def _log_filter(record: dict) -> bool:
     """过滤器：按日志等级显示，并丢弃心跳类事件，截断过长消息。"""
     try:
@@ -294,6 +301,10 @@ def _log_filter(record: dict) -> bool:
             "[notice.notify.essence]",
             "[notice.notify.group_ban]",
         )):
+            return False
+
+        # 2.5) 丢弃每个事件的事件 dump 行（含消息/私聊/通知/请求等全部类型）
+        if _EVENT_DUMP_RE.match(msg):
             return False
 
         # 3) 过长的 dict 事件消息（>200 字符且含内部字段）也丢掉
@@ -314,6 +325,16 @@ def _log_filter(record: dict) -> bool:
         return True
     except Exception:
         # 任何异常都放行（宁显示不错失）
+        return True
+
+
+def _file_log_filter(record: dict) -> bool:
+    """文件日志过滤器：不设等级门槛（文件保留 DEBUG 起），仅丢弃事件 dump 行。"""
+    try:
+        if _EVENT_DUMP_RE.match(str(record.get("message", ""))):
+            return False
+        return True
+    except Exception:
         return True
 
 
@@ -367,6 +388,7 @@ def _apply_logging():
             level=10,  # DEBUG 起写入文件
             diagnose=False,
             colorize=False,
+            filter=_file_log_filter,
             encoding="utf-8",
             enqueue=True,
             rotation="1 day",
@@ -635,7 +657,7 @@ if __name__ == "__main__":
             from utils.db_init import initialize_all
             await initialize_all()
 
-        asyncio.get_event_loop().run_until_complete(_db_init())
+        asyncio.run(_db_init())
     except Exception as e:
         logger.warning(f"数据库初始化失败: {e}")
 
