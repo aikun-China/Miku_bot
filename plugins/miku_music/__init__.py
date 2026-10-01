@@ -193,7 +193,7 @@ _TEMPLATE = (
     "  # QQ音乐 API 基址\n"
     "  qqmusic_api_base: \"https://qqmusicapi.aikun-bili.top\"\n"
     "  # QQ音乐Cookie（QQ音乐风控拦截机房IP的匿名取链，需真实登录态才能取到播放链接）\n"
-    "  # 获取方式：浏览器登录 y.qq.com → F12 → Application → Cookies → 复制整串Cookie粘贴到这里\n"
+    "  # 获取方式：浏览器登录 y.qq.com → F12 → Application → Cookies → 复制整串Cookie粘贴到这里（保持一行，断行/前缀会自动清洗）\n"
     "  qqmusic_cookie: \"\"\n"
     "  # 音频文件最大保留天数（超过此天数的缓存音频将被自动清理）\n"
     "  max_retention_days: 30\n"
@@ -255,11 +255,16 @@ def _is_qqmusic_enabled() -> bool:
 
 
 def _get_qq_cookie() -> str:
-    """获取配置的QQ音乐 Cookie 字符串（原样传给适配层）"""
+    """获取配置的QQ音乐 Cookie 字符串（清洗粘贴杂质后传给适配层）"""
     raw = _conf("qqmusic_cookie", "")
     if not raw:
         return ""
-    return str(raw).strip()
+    c = str(raw).strip().strip('"').strip("'")
+    # 粘贴杂质兜底：整行请求头前缀、换行断行、分号（含全角）两侧多余空白
+    c = re.sub(r"^cookie\s*[:：]\s*", "", c, flags=re.IGNORECASE)
+    c = re.sub(r"\s*[\r\n]+\s*", " ", c)
+    c = re.sub(r"\s*[;；]\s*", "; ", c)
+    return c.strip()
 
 
 # ============================================================
