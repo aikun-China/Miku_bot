@@ -279,11 +279,32 @@ except Exception:
     pass
 
 
-# 事件 dump 行（nonebot.message.handle_event 以 SUCCESS 级打印的
-# “OneBot V11 <自ID> | [事件类型]: ...”）在控制台与文件日志里都会刷屏，统一丢弃。
+# 事件 dump 行前缀（nonebot.message.handle_event 对每个事件打印的
+# 「OneBot V11 <自ID> | [事件类型]: ...」）——保留事件内容、仅剥掉该前缀。
 # 原始 record["message"] 带 loguru 颜色标签（<m>…</m>），非彩色 sink 渲染后标签被剥离，
 # 锚定开头的正则兼容两种形态，且不会误伤 handle_event 里其它 WARNING/DEBUG/ERROR 日志
 _EVENT_DUMP_RE = re.compile(r"^(?:<m>)?OneBot V11 \d+(?:</m>)?\s*\|\s*\[[\w.]+\]\s*:")
+
+# QQ 协议端的纯心跳/输入状态等无意义事件（控制台与文件统一整行丢弃）
+_NOISE_EVENT_KEYWORDS = (
+    "[notice.notify.input_status]",
+    "[notice.notify.group_admin_approve]",
+    "[notice.notify.essence]",
+    "[notice.notify.group_ban]",
+)
+
+
+def _strip_event_dump_prefix(record: dict) -> None:
+    """就地剥掉事件 dump 行的「OneBot V11 <自ID> | [事件类型]:」前缀，保留事件内容。
+
+    在 filter 阶段直接改写 record["message"]：loguru 的 filter 通过后会用同一个
+    record 做格式化，因此改动对控制台与文件两个 sink 均生效。
+    """
+    msg = record.get("message")
+    if isinstance(msg, str):
+        m = _EVENT_DUMP_RE.match(msg)
+        if m:
+            record["message"] = msg[m.end():].lstrip()
 
 
 def _log_filter(record: dict) -> bool:
@@ -295,17 +316,12 @@ def _log_filter(record: dict) -> bool:
 
         # 2) 显式丢弃：QQ 协议端的纯心跳/输入状态等事件
         msg = str(record.get("message", ""))
-        if any(kw in msg for kw in (
-            "[notice.notify.input_status]",
-            "[notice.notify.group_admin_approve]",
-            "[notice.notify.essence]",
-            "[notice.notify.group_ban]",
-        )):
+        if any(kw in msg for kw in _NOISE_EVENT_KEYWORDS):
             return False
 
-        # 2.5) 丢弃每个事件的事件 dump 行（含消息/私聊/通知/请求等全部类型）
-        if _EVENT_DUMP_RE.match(msg):
-            return False
+        # 2.5) 剥掉事件 dump 行的「OneBot V11 <自ID> | [事件类型]:」前缀（保留事件内容）
+        _strip_event_dump_prefix(record)
+        msg = str(record.get("message", ""))
 
         # 3) 过长的 dict 事件消息（>200 字符且含内部字段）也丢掉
         if len(msg) > 200 and ("'self_id':" in msg or "'post_type':" in msg or "'notice_type':" in msg):
@@ -329,10 +345,12 @@ def _log_filter(record: dict) -> bool:
 
 
 def _file_log_filter(record: dict) -> bool:
-    """文件日志过滤器：不设等级门槛（文件保留 DEBUG 起），仅丢弃事件 dump 行。"""
+    """文件日志过滤器：不设等级门槛（文件保留 DEBUG 起），丢弃心跳类事件并剥掉事件 dump 行前缀。"""
     try:
-        if _EVENT_DUMP_RE.match(str(record.get("message", ""))):
+        msg = str(record.get("message", ""))
+        if any(kw in msg for kw in _NOISE_EVENT_KEYWORDS):
             return False
+        _strip_event_dump_prefix(record)
         return True
     except Exception:
         return True
