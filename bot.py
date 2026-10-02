@@ -5,6 +5,38 @@ from pathlib import Path
 import re
 import sys
 import os
+import ctypes
+
+
+def _disable_quick_edit_mode() -> None:
+    """禁用 Windows 控制台的"快速编辑模式"。
+
+    Windows 控制台默认开启快速编辑，鼠标误点窗口会进入文本选择状态，
+    导致 stdout/stderr 写入阻塞，整个 Bot 日志卡死（看似挂起）。
+    程序启动时调用一次即可永久关闭该标志位。
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        kernel32 = ctypes.windll.kernel32
+        # STD_INPUT_HANDLE = -10
+        handle = kernel32.GetStdHandle(-10)
+        if handle == -1:  # INVALID_HANDLE_VALUE（无控制台，如 pythonw）
+            return
+        mode = ctypes.c_uint()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return
+        ENABLE_QUICK_EDIT = 0x0040
+        ENABLE_EXTENDED_FLAGS = 0x0080
+        # 清除快速编辑位；微软文档要求同时置 ENABLE_EXTENDED_FLAGS 才生效
+        new_mode = (mode.value & ~ENABLE_QUICK_EDIT) | ENABLE_EXTENDED_FLAGS
+        kernel32.SetConsoleMode(handle, new_mode)
+    except Exception:
+        pass  # 非标准控制台/权限不足时静默跳过，不影响启动
+
+
+_disable_quick_edit_mode()
+
 
 # ═══════════════════════════════════════════════════════════════
 # 🔵 日志系统（参考 真寻bot 风格 + NoneBot 默认格式）
