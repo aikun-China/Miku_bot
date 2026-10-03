@@ -40,7 +40,6 @@ PROTECTED_ITEMS = {
     ".venv",
     ".git",
     "version.json",
-    "plugins_index",  # 插件索引由用户管理，不覆盖
 }
 
 # ─── 需要更新的核心文件 ───

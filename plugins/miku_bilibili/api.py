@@ -41,6 +41,25 @@ async def close_client():
         _client = None
 
 
+def _handle_auth_failure(status_code: int, json_code: int) -> bool:
+    """检测凭证失效：HTTP 401/403 或 B站返回 code=-101（账号未登录）。
+
+    命中时自动清除本地无效凭证并提示重新登录，绝不在日志中输出 SESSDATA。
+    返回 True 表示凭证已失效。
+    """
+    if status_code in (401, 403) or json_code == -101:
+        try:
+            from .credential import clear_cookies
+            clear_cookies()
+        except Exception:
+            pass
+        logger.warning(
+            "[miku_bilibili] B站凭证已失效(401/403/未登录)，已清除，请重新 b站登录 扫码"
+        )
+        return True
+    return False
+
+
 async def _retry_async(coro_func, max_retries: int = 2, delay: float = 1.0):
     """带重试的异步调用"""
     last_error = None
@@ -94,6 +113,7 @@ async def fetch_video_info(vid: str) -> VideoInfo:
     if data.get("code") != 0:
         code = data.get("code")
         msg = data.get("message", "未知错误")
+        _handle_auth_failure(0, code)
         if code == -403:
             raise ResourceForbiddenError(f"视频访问被禁止: {msg}")
         elif code in [-404, 62002]:
@@ -147,6 +167,7 @@ async def fetch_video_download_url(bvid: str, qn: int = 32, fnval: int = 16) -> 
 
     data = await _retry_async(_fetch)
     if data.get("code") != 0:
+        _handle_auth_failure(0, data.get("code"))
         raise BilibiliResponseError(
             f"获取下载链接失败: {data.get('message', '未知错误')}",
             context={"code": data.get("code")}

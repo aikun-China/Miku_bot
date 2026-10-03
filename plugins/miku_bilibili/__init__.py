@@ -66,8 +66,8 @@ from .api import (
 from .cache import SessionCache
 from .credential import (
     is_logged_in, check_login_status, clear_cookies, save_cookies,
-    get_headers_with_cookie, _HEADERS, generate_qrcode, poll_qrcode_status,
-    cookies_str_to_dict,
+    get_headers_with_cookie, get_credential, _HEADERS, generate_qrcode,
+    poll_qrcode_status, cookies_str_to_dict,
 )
 from .download import download_video, get_video_cover_data, auto_download_video
 from .message import (
@@ -656,17 +656,36 @@ async def _login_handler(bot: Bot, event: MessageEvent):
     os.makedirs(qrcode_dir, exist_ok=True)
     qrcode_path = os.path.join(qrcode_dir, f"bili_qrcode_{qrcode_key[:8]}.png")
     
+    # 🔴 Bug 修复：二维码此前用 file:/// URI 发送（部分协议端无法打开）
+    #    改为先下载到本地，再用 base64 发送（兼容性最好），失败回退本地路径 Path 对象
     try:
         async with curl_requests.AsyncSession(impersonate="chrome131", timeout=10.0) as client:
             r = await client.get(qrcode_api)
             if r.status_code == 200 and r.content:
                 with open(qrcode_path, "wb") as f:
                     f.write(r.content)
-                image_segment = MessageSegment.image(_Path(qrcode_path).as_uri())
-            else:
-                image_segment = MessageSegment.image(qrcode_api)
     except Exception as e:
         logger.warning(f"[miku_bilibili] 下载二维码失败: {e}")
+
+    image_segment = None
+    # 方案A（推荐）：本地二维码转 base64 发送，协议端无需访问本地文件系统
+    if Path(qrcode_path).exists():
+        try:
+            import base64 as _b64
+            with open(qrcode_path, "rb") as f:
+                _data = _b64.b64encode(f.read()).decode("ascii")
+            image_segment = MessageSegment.image(f"base64://{_data}")
+            logger.info("[miku_bilibili] 二维码已用 base64 发送")
+        except Exception as e:
+            logger.warning(f"[miku_bilibili] base64 发送二维码失败: {e}")
+    # 方案B：直接用本地路径 Path 对象发送
+    if image_segment is None:
+        try:
+            image_segment = MessageSegment.image(_Path(qrcode_path))
+        except Exception as e:
+            logger.warning(f"[miku_bilibili] 本地路径发送二维码失败: {e}")
+    # 方案C：兜底发在线二维码 API
+    if image_segment is None:
         image_segment = MessageSegment.image(qrcode_api)
 
     await login_cmd.send(
@@ -755,6 +774,51 @@ async def _status_handler(bot: Bot, event: MessageEvent):
         await status_cmd.finish(f"✅ B站已登录\n👤 用户名：{uname}")
     else:
         await status_cmd.finish("❌ 未登录B站\n发送 bili登录 查看登录方式")
+
+
+# 命令：查看统一凭证（b站凭证）
+cred_cmd = on_command(
+    "b站凭证",
+    aliases={"B站凭证", "bili凭证", "bilibili凭证"},
+    priority=10,
+    block=True,
+)
+
+
+@cred_cmd.handle()
+async def _cred_handler(event: MessageEvent):
+    if not is_enabled():
+        return
+
+    is_login, uname = await check_login_status()
+
+    if not is_login:
+        await cred_cmd.finish(
+            "❌ 未登录B站\n"
+            "请发送 b站登录 扫码获取凭证，或 bili设置Cookie 手动设置"
+        )
+
+    cred = get_credential()
+    # 🔒 安全：绝不明文输出完整 SESSDATA，只显示末 4 位 + 掩码
+    sessdata = cred.get("SESSDATA") or cred.get("sessdata") or ""
+    uid = cred.get("uid") or cred.get("DedeUserID") or "未知"
+    bili_jct = cred.get("bili_jct") or ""
+
+    def _mask(v: str) -> str:
+        return f"••••{v[-4:]}" if v and len(v) >= 4 else "（空）"
+
+    await cred_cmd.finish(
+        "\n".join([
+            "✅ B站凭证信息",
+            f"👤 用户名：{uname}",
+            f"🆔 UID：{uid}",
+            f"🔑 SESSDATA：{_mask(sessdata)}",
+            f"🔑 bili_jct：{_mask(bili_jct)}",
+            "",
+            "💡 凭证已持久化到 config/bot.yaml，重启无需重新扫码",
+            "💡 「查成分」命令将复用此凭证",
+        ])
+    )
 
 
 @logout_cmd.handle()
@@ -1191,7 +1255,7 @@ register_plugin_info(
     commands=[
         "bili下载", "b站下载",
         "bili封面", "b站封面",
-        "bili登录", "bili状态", "bili退出登录", "bili设置Cookie",
+        "bili登录", "bili状态", "bili退出登录", "bili设置Cookie", "b站凭证",
         "B站订阅添加", "B站订阅删除", "B站订阅列表", "B站订阅设置", "B站订阅清空",
         "bili检查全部",
         "开启群被动b站解析", "关闭群被动b站解析",

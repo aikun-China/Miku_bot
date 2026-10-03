@@ -1,6 +1,13 @@
 """
 Miku B站插件 - 凭证管理模块
 管理B站登录凭证（Cookie）
+
+统一凭证存储（数据桥接）：
+  1. 兼容旧的本地 Cookie 文件（data/miku_bilibili/bili_cookies.json）
+  2. 扫码登录成功后，将 SESSDATA / bili_jct / uid 同步写入 config/bot.yaml
+     的 `bilibili_credential` 模块，供「查成分(ddcheck)」等插件动态读取，
+     实现一次扫码、永久复用凭证。
+  3. 读取凭证时优先使用 bot.yaml 中的 bilibili_credential（权威来源）。
 """
 
 import json
@@ -11,7 +18,14 @@ from typing import Dict, Optional, Tuple
 from curl_cffi import requests as curl_requests
 from nonebot.log import logger
 
+import yaml
+
 from .config import COOKIE_FILE, get_request_timeout
+
+# ── 统一凭证存储位置：config/bot.yaml 的 bilibili_credential 模块 ──
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+CONFIG_YAML = PROJECT_ROOT / "config" / "bot.yaml"
+CONFIG_CREDENTIAL_KEY = "bilibili_credential"
 
 _HEADERS = {
     "User-Agent": (
@@ -24,8 +38,104 @@ _HEADERS = {
 }
 
 
+def _read_yaml_credential() -> dict:
+    """从 config/bot.yaml 读取 bilibili_credential 模块。"""
+    try:
+        if not CONFIG_YAML.exists():
+            return {}
+        data = yaml.safe_load(CONFIG_YAML.read_text(encoding="utf-8")) or {}
+        cred = data.get(CONFIG_CREDENTIAL_KEY) or {}
+        return cred if isinstance(cred, dict) else {}
+    except Exception as e:
+        logger.warning(f"[miku_bilibili] 读取 bot.yaml 凭证失败: {e}")
+        return {}
+
+
+def _update_yaml_credential(cred: dict) -> None:
+    """只更新 config/bot.yaml 的 bilibili_credential 模块，保留其余内容不变。
+
+    以纯文本方式定位顶层 `bilibili_credential:` 区块并整体替换，
+    避免 yaml.safe_dump 重排其它插件区内容。
+    """
+    try:
+        CONFIG_YAML.parent.mkdir(parents=True, exist_ok=True)
+        lines = CONFIG_YAML.read_text(encoding="utf-8").splitlines() if CONFIG_YAML.exists() else []
+
+        out = []
+        skipping = False
+        for ln in lines:
+            stripped = ln.strip()
+            if stripped == CONFIG_CREDENTIAL_KEY + ":" or stripped.startswith(CONFIG_CREDENTIAL_KEY + ":"):
+                skipping = True
+                continue
+            if skipping:
+                # 遇到下一个顶层键（非缩进、含冒号）则结束跳过
+                if ln and not ln[0].isspace() and ":" in stripped:
+                    skipping = False
+                    out.append(ln)
+                continue
+            out.append(ln)
+
+        # 构造新的 bilibili_credential 区块
+        block = [CONFIG_CREDENTIAL_KEY + ":"]
+        for k, v in cred.items():
+            if v is None:
+                v = ""
+            # 简单标量处理（凭证均为字符串/数字），特殊字符加引号
+            s = str(v)
+            if any(c in s for c in ":#{}\"'\n") or s != s.strip():
+                s = json.dumps(s, ensure_ascii=False)
+            block.append(f"  {k}: {s}")
+
+        if out and out[-1].strip():
+            out.append("")
+        text = "\n".join(out + [""] + block).rstrip() + "\n"
+        CONFIG_YAML.write_text(text, encoding="utf-8")
+        logger.info(f"[miku_bilibili] 凭证已同步到 {CONFIG_YAML.name} 的 {CONFIG_CREDENTIAL_KEY}")
+    except Exception as e:
+        logger.warning(f"[miku_bilibili] 更新 bot.yaml 凭证失败: {e}")
+
+
+def get_credential() -> dict:
+    """获取统一凭证 dict（优先 bot.yaml 的 bilibili_credential，回退本地 Cookie 文件）。"""
+    cred = _read_yaml_credential()
+    if cred:
+        return cred
+    # 回退：旧的本地 Cookie 文件
+    return load_cookies()
+
+
+def _extract_cred_fields(cookies: Dict[str, str]) -> dict:
+    """从 Cookie 字典中提取统一凭证字段（SESSDATA / bili_jct / uid 等）。"""
+    cred = {}
+    for k in ("SESSDATA", "sessdata", "bili_jct", "DedeUserID", "buvid3", "b_nut", "buvid4"):
+        if k in cookies and cookies.get(k):
+            cred[k] = str(cookies[k])
+    # uid 归一化：优先显式 uid，其次 DedeUserID
+    uid = cred.pop("uid", None) or cred.pop("DedeUserID", None)
+    if uid:
+        cred["uid"] = str(uid)
+    return cred
+
+
 def load_cookies() -> Dict[str, str]:
-    """从文件加载Cookie"""
+    """加载 Cookie。优先读 bot.yaml 的 bilibili_credential，回退本地 Cookie 文件。"""
+    cred = _read_yaml_credential()
+    if cred:
+        cookies = {}
+        # 将凭证还原成 Cookie 字典（SESSDATA 大小写兼容）
+        for k, v in cred.items():
+            if k == "uid":
+                cookies["DedeUserID"] = str(v)
+            elif k in ("SESSDATA", "sessdata"):
+                cookies.setdefault("SESSDATA", str(v))
+            elif k == "bili_jct":
+                cookies["bili_jct"] = str(v)
+            else:
+                cookies[k] = str(v)
+        if cookies.get("SESSDATA"):
+            return cookies
+    # 回退：本地 Cookie 文件
     if not COOKIE_FILE.exists():
         return {}
     try:
@@ -38,26 +148,36 @@ def load_cookies() -> Dict[str, str]:
 
 
 def save_cookies(cookies: Dict[str, str]) -> None:
-    """保存Cookie到文件"""
+    """保存Cookie。同时写入本地文件与 bot.yaml 的 bilibili_credential。"""
     try:
         COOKIE_FILE.parent.mkdir(parents=True, exist_ok=True)
         COOKIE_FILE.write_text(
             json.dumps(cookies, ensure_ascii=False, indent=2),
             encoding="utf-8"
         )
-        logger.info("[miku_bilibili] Cookie已保存")
+        logger.info("[miku_bilibili] Cookie已保存到本地文件")
     except Exception as e:
-        logger.warning(f"[miku_bilibili] 保存Cookie失败: {e}")
+        logger.warning(f"[miku_bilibili] 保存Cookie文件失败: {e}")
+
+    # 同步统一凭证到 bot.yaml（数据桥接，供 ddcheck 等读取）
+    cred = _extract_cred_fields(cookies)
+    if cred:
+        _update_yaml_credential(cred)
 
 
 def clear_cookies() -> None:
-    """清除Cookie"""
+    """清除Cookie：同时清理本地文件与 bot.yaml 的 bilibili_credential。"""
     try:
         if COOKIE_FILE.exists():
             COOKIE_FILE.unlink()
-            logger.info("[miku_bilibili] Cookie已清除")
+            logger.info("[miku_bilibili] Cookie文件已清除")
     except Exception as e:
-        logger.warning(f"[miku_bilibili] 清除Cookie失败: {e}")
+        logger.warning(f"[miku_bilibili] 清除Cookie文件失败: {e}")
+
+    try:
+        _update_yaml_credential({})
+    except Exception as e:
+        logger.warning(f"[miku_bilibili] 清除 bot.yaml 凭证失败: {e}")
 
 
 def is_logged_in() -> bool:
@@ -89,7 +209,7 @@ def get_headers_with_cookie() -> Dict[str, str]:
 
 
 async def check_login_status() -> tuple[bool, str]:
-    """检查登录状态，返回 (is_logged_in, username)"""
+    """检查登录状态，返回 (is_logged_in, username)。凭证失效时自动清除。"""
     try:
         timeout = get_request_timeout()
         async with curl_requests.AsyncSession(
@@ -100,7 +220,12 @@ async def check_login_status() -> tuple[bool, str]:
             if data.get("code") == 0:
                 is_login = data.get("data", {}).get("isLogin", False)
                 uname = data.get("data", {}).get("uname", "")
+                if not is_login:
+                    clear_cookies()
                 return is_login, uname
+            if data.get("code") == -101:
+                clear_cookies()
+                logger.warning("[miku_bilibili] 凭证未登录(-101)，已清除")
             return False, ""
     except Exception as e:
         logger.warning(f"[miku_bilibili] 检查登录状态失败: {e}")

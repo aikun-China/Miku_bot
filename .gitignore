@@ -79,3 +79,18 @@ desktop.ini
 # 临时的测试脚本
 _test_*.py
 _test_*.ps1
+
+# =====================================
+# 本机私有 / 同步排除（勿提交）
+# =====================================
+.env
+.env.*
+deploy/
+CHANGELOG.MD
+Dockerfile
+docker-compose.yml
+.dockerignore
+utils/check_deps.py
+run_ollama.bat
+start_bot.bat
+.wrangler/

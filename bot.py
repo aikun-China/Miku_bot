@@ -672,6 +672,17 @@ if __name__ == "__main__":
     nonebot.load_builtin_plugins("echo")
     nonebot.load_from_toml("pyproject.toml")
 
+    # ── 🔵 第三方商店插件（pip/uv 安装后自动加载；未安装则跳过）──
+    for _third_pkg in (
+        "nonebot_plugin_dorodoro",
+        "nonebot_plugin_petpet",
+    ):
+        try:
+            nonebot.load_plugin(_third_pkg)
+            logger.info(f"[加载] 第三方插件 {_third_pkg} 已加载")
+        except Exception as e:
+            logger.warning(f"[加载] 第三方插件 {_third_pkg} 加载失败（未安装？）: {e}")
+
     # ── 🔵 插件关键词自动发现 ──
     try:
         _collect_plugin_keywords()

@@ -29,6 +29,9 @@ playwright>=1.60.0
 Pillow>=10.0.0
 imagehash>=4.3.0
 
+# === 视频下载（多平台/B站解析备用引擎）===
+yt-dlp>=2024.12.01
+
 # === 可选（后续开发）===
 # sqlalchemy
 # aiosqlite

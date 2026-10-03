@@ -109,7 +109,17 @@ _AI_TEMPLATE = (
     "  # ── 特殊人物识别 ──\n"
     "  # 通过 QQ 号和昵称识别特定的人，给 AI 加上身份设定\n"
     "  # 每个条目包含：qq号列表、昵称关键词、身份描述、称呼方式、语气调整\n"
-    "  special_users: []\n"
+    "  special_users:\n"
+    "    - qq:\n"
+    "        - '761695424'\n"
+    "      nicknames:\n"
+    "        - 愛君\n"
+    "        - 愛君_aikun\n"
+    "        - aikun\n"
+    "      identity: 我的开发者兼主人，愛君_aikun\n"
+    "      description: 是个即将进入高三的苦逼高中生，天天作业考试一大堆，还抽时间写代码，很厉害的。\n"
+    "      address_as: ご主人様 / 狗修金 / 愛君酱\n"
+    "      tone: 稍微乖巧一点，带点女仆感但不要太夸张，保持开朗可爱，偶尔可以傲娇一下\n"
     "\n"
     "  # ── 高级参数 ──\n"
     "  # 采样温度（0-2，值越高越发散，默认 1.0）\n"
@@ -257,7 +267,16 @@ _cfg = config_manager.register_plugin(
         "favor_affect_reply": True,
         "personality_file": "plugins/miku_ai/personality.txt",
         "personality_reload": False,
-        "special_users": [],
+        "special_users": [
+            {
+                "qq": ["761695424"],
+                "nicknames": ["愛君", "愛君_aikun", "aikun"],
+                "identity": "我的开发者兼主人，愛君_aikun",
+                "description": "是个即将进入高三的苦逼高中生，天天作业考试一大堆，还抽时间写代码，很厉害的。",
+                "address_as": "ご主人様 / 狗修金 / 愛君酱",
+                "tone": "稍微乖巧一点，带点女仆感但不要太夸张，保持开朗可爱，偶尔可以傲娇一下",
+            }
+        ],
         "temperature": 1.0,
         "max_tokens": 800,
         "request_timeout": 30,

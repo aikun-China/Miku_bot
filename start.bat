@@ -4,33 +4,29 @@ cd /d "%~dp0"
 title MikuBot
 
 echo =========================================
-echo   MikuBot Starting...
+echo   MikuBot Starting (uv)...
 echo =========================================
 
-REM 1. Check virtual environment
-if not exist ".venv\Scripts\python.exe" (
-    echo [ERROR] Virtual environment not found
-    echo Please run: python -m venv .venv
+REM 1. Check uv
+where uv >nul 2>nul
+if errorlevel 1 (
+    echo [ERROR] uv not found. Please install:
+    echo   powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
     pause
     exit /b 1
 )
-echo [OK] Virtual environment found
+echo [OK] uv found
 
-REM 2. Check dependencies
+REM 2. Sync dependencies (uv sync creates/reuses .venv)
 echo.
-".venv\Scripts\python.exe" -c "import nonebot" >nul 2>nul
+echo [INFO] Syncing dependencies (uv sync)...
+uv sync
 if errorlevel 1 (
-    echo [INFO] Dependencies not found, installing...
-    ".venv\Scripts\python.exe" -m pip install -r requirements.txt
-    if errorlevel 1 (
-        echo [ERROR] Dependency installation failed
-        pause
-        exit /b 1
-    )
-    echo [OK] Dependencies installed
-) else (
-    echo [OK] Dependencies ready
+    echo [ERROR] uv sync failed
+    pause
+    exit /b 1
 )
+echo [OK] Dependencies ready
 
 REM 3. Start Bot
 echo.
@@ -39,7 +35,7 @@ echo   Starting MikuBot...
 echo =========================================
 echo.
 
-".venv\Scripts\python.exe" bot.py
+uv run python bot.py
 
 if errorlevel 1 (
     echo.

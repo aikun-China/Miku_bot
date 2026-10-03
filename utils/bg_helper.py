@@ -56,6 +56,14 @@ KEYWORD_MAP: Dict[str, List[str]] = {
         "shop_bg", "shop_card", "shop",
         "商店", "商城", "商店背景", "商品卡",
     ],
+    "parser": [
+        "parser_bg", "parser_card", "parser",
+        "解析", "视频解析", "解析背景", "解析卡片",
+    ],
+    "bilibili_card": [
+        "bilibili_bg", "bilibili_card",
+        "b站", "b站背景", "b站卡片",
+    ],
 }
 # 支持的扩展名
 SUPPORTED_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -68,6 +76,7 @@ STANDARD_NAMES = {
     "ai": "ai_bg.png",
     "profile": "profile_bg.png",
     "shop": "shop_bg.png",
+    "parser": "parser_bg.png",
 }
 
 

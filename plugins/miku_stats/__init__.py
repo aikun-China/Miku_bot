@@ -355,6 +355,21 @@ _COMMAND_TO_PLUGIN = {
     # 通知管理员
     "通知管理员": "miku_notify_admin",
     
+    # B站解析
+    "B站解析": "miku_bilibili",
+    "b站解析": "miku_bilibili",
+    "bilibili解析": "miku_bilibili",
+    "bili": "miku_bilibili",
+    "解析B站": "miku_bilibili",
+    "解析b站": "miku_bilibili",
+    "bili下载": "miku_bilibili",
+    "b站下载": "miku_bilibili",
+    "bili封面": "miku_bilibili",
+    "b站封面": "miku_bilibili",
+    "bili登录": "miku_bilibili",
+    "bili状态": "miku_bilibili",
+    "bili设置Cookie": "miku_bilibili",
+    
     # 天气
     "天气": "miku_weather",
     
@@ -432,7 +447,7 @@ msg_rank_cmd = on_command(
 # 功能排行
 cmd_rank_cmd = on_command(
     "功能排行",
-    aliases={"插件排行", "谁用的多", "功能统计"},
+    aliases={"谁用的多", "功能统计"},
     priority=5,
     block=True,
 )
