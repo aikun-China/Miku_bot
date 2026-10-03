@@ -1,5 +1,5 @@
 """
-Miku B站内容解析+订阅插件
+Miku B站内容解析+订阅+成分姬插件
 ========================
 功能：
 - 被动解析：自动识别消息中的B站链接（视频/直播/专栏/番剧/用户空间）
@@ -7,6 +7,7 @@ Miku B站内容解析+订阅插件
 - 封面获取：bili封面 / b站封面
 - 群组控制：开启群被动b站解析 / 关闭群被动b站解析
 - 扫码登录：bili登录
+- 成分查询：查成分（原 miku_ddcheck 独立插件，已并入本插件 ddcheck 子模块）
 - B站订阅：B站订阅 添加/删除/列表/设置/清空
   - UP主动态/视频更新推送
   - 直播开播提醒
@@ -79,11 +80,12 @@ from .subscription import (
     list_subscriptions, update_sub_config, check_all_subscriptions,
     force_push_subscription,
 )
+from .ddcheck import ddcheck_cmd
 
 
 __plugin_meta__ = PluginMetadata(
     name="MikuB站解析",
-    description="B站内容解析（视频、直播、专栏、番剧、用户空间），支持被动解析、下载和封面获取",
+    description="B站内容解析（视频、直播、专栏、番剧、用户空间），支持被动解析、下载、封面获取与VTuber成分查询",
     usage="""📺 B站内容解析
 
 【被动解析】
@@ -94,6 +96,9 @@ __plugin_meta__ = PluginMetadata(
   • bili封面 / b站封面 - 获取视频封面（引用消息）
   • 开启群被动b站解析 - 开启被动解析
   • 关闭群被动b站解析 - 关闭被动解析
+
+【成分查询】
+  • 查成分 <B站用户名/UID> - 查询关注列表的VTuber成分
 """,
     type="application",
     supported_adapters={"~onebot.v11"},
@@ -1248,10 +1253,10 @@ async def _checkall_handler(bot: Bot, event: MessageEvent):
 
 register_plugin_info(
     "miku_bilibili",
-    name="B站解析+订阅",
+    name="B站解析+成分姬",
     icon="📺",
     order=8,
-    description="B站内容解析（视频/直播/专栏/用户空间）+ 订阅推送（UP主动态/视频/直播/番剧）",
+    description="B站内容解析（视频/直播/专栏/用户空间）+ 订阅推送 + VTuber成分查询（原成分姬已并入）",
     commands=[
         "bili下载", "b站下载",
         "bili封面", "b站封面",
@@ -1260,8 +1265,9 @@ register_plugin_info(
         "bili检查全部",
         "开启群被动b站解析", "关闭群被动b站解析",
         "bili启停",
+        "查成分",
     ],
-    usage="""📺 B站解析+订阅
+    usage="""📺 B站解析+成分姬
 
 【被动解析】
 发送B站链接自动解析视频/直播/用户信息
@@ -1272,6 +1278,10 @@ register_plugin_info(
 
 【获取封面】
   bili封面 <链接/BV号>
+
+【成分查询】
+  查成分 <B站用户名/UID> - 查询关注列表的VTuber成分
+  💡 复用统一B站凭证，未登录先发 b站登录
 
 【账号管理】（超级用户）
   bili登录 - 扫码登录B站账号

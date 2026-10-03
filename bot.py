@@ -680,6 +680,30 @@ if __name__ == "__main__":
         try:
             nonebot.load_plugin(_third_pkg)
             logger.info(f"[加载] 第三方插件 {_third_pkg} 已加载")
+            if _third_pkg == "nonebot_plugin_petpet":
+                try:
+                    from utils.plugin_registry import register_plugin_info
+                    register_plugin_info(
+                        "nonebot_plugin_petpet",
+                        name="表情包制作",
+                        icon="🐾",
+                        order=12,
+                        description="摸/亲/贴/撕/丢等几十种表情包生成（petpet），支持@、QQ号、自己或回复图片",
+                        commands=["摸摸", "rua", "亲亲", "贴贴", "撕", "丢", "爬", "膜拜"],
+                        usage="""🐾 表情包制作
+
+触发方式（以「摸摸」为例，其余关键词同理）：
+  摸摸 @某人 - 生成摸头GIF
+  摸摸 QQ号 / 摸摸 自己
+  回复一张图片 + 摸摸 - 用被回复的图制作
+
+常用关键词：
+  摸摸/rua 亲亲 贴贴 撕 丢 爬 转 膜拜
+  精神支柱 一直 加载中 出警 舔屏 啃 等
+""",
+                    )
+                except Exception as e:
+                    logger.warning(f"[加载] petpet 帮助菜单注册失败: {e}")
         except Exception as e:
             logger.warning(f"[加载] 第三方插件 {_third_pkg} 加载失败（未安装？）: {e}")
 

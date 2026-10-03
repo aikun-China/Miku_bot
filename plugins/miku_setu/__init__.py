@@ -10,18 +10,20 @@ Miku 涩图 (send_setu 适配版)
 - 图片：两种源的图片 URL 均替换为自定义代理域名（pixiv_proxy_host，
         自研 Worker pixiv.aikun-bili.top，仅图片链路可用）
 - 配置：source / r18 / num / pixiv_proxy_host / pixiv_refresh_token 写入 config/bot.yaml
-- 图片发送：NoneBot2 原生 MessageSegment.image
+- 图片发送：NoneBot2 原生 MessageSegment.image；每次命令只发一张
+          （num 为候选数量，某张发送失败自动换下一候选，不再连发多图）
 - 安全：refresh_token 不输出到日志/群聊
 - 触发：群聊+私聊均可用；priority=5 高于 miku_ai 的全消息监听(10)，
         命令命中后 block=True 阻断传播，避免 AI 插件对同一消息重复回复
-- 撤回：withdraw_seconds（默认 60，0=关闭）秒后自动撤回提示与图片（仅群聊，
-        私聊消息协议端通常不支持撤回）；计时起点为各消息自身发送成功时
+- 撤回：withdraw_seconds（默认 60，0=关闭）秒后自动撤回提示与图片；计时起点为
+        各消息自身发送成功时；群聊/私聊均尝试（私聊撤回取决于协议端支持，
+        失败会记录日志便于排查）
 """
 
 import asyncio
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Set
 from urllib.parse import urlparse
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -94,20 +96,30 @@ def _extract_msg_id(ret) -> Optional[int]:
         return None
 
 
-async def _withdraw_later(bot: Bot, message_id: int, seconds: int):
-    """延时撤回单条消息（失败静默：消息可能已被手动删除或超时）。"""
+_withdraw_tasks: Set["asyncio.Task"] = set()
+
+
+async def _withdraw_later(bot: Bot, message_id: int, seconds: int, in_group: bool):
+    """延时撤回单条消息（消息可能已被手动删除或超期，失败仅记日志不抛出）。"""
+    chat_type = "群聊" if in_group else "私聊"
     await asyncio.sleep(seconds)
     try:
         await bot.delete_msg(message_id=message_id)
-    except Exception:
-        pass
+        logger.info(f"[miku_setu] 已自动撤回{chat_type}消息 msg_id={message_id}")
+    except Exception as e:
+        logger.warning(f"[miku_setu] 自动撤回失败（{chat_type}）msg_id={message_id}: {e}")
 
 
 def _schedule_withdraw(bot: Bot, event: MessageEvent, message_id: Optional[int], seconds: int):
-    """安排撤回任务；仅群聊生效，seconds<=0 或无 message_id 时跳过。"""
-    if seconds <= 0 or not isinstance(event, GroupMessageEvent) or not message_id:
+    """安排撤回任务；群聊/私聊均尝试（私聊撤回取决于协议端支持，失败可见于日志）。"""
+    if seconds <= 0 or not message_id:
         return
-    asyncio.create_task(_withdraw_later(bot, message_id, seconds))
+    in_group = isinstance(event, GroupMessageEvent)
+    chat_type = "群聊" if in_group else "私聊"
+    logger.debug(f"[miku_setu] 计划 {seconds}s 后撤回{chat_type}消息 msg_id={message_id}")
+    task = asyncio.create_task(_withdraw_later(bot, message_id, seconds, in_group))
+    _withdraw_tasks.add(task)
+    task.add_done_callback(_withdraw_tasks.discard)
 
 
 def _get_refresh_token() -> str:
@@ -156,24 +168,71 @@ async def _search_illust(access_token: str, word: str, limit: int = 6) -> List[d
     return []
 
 
+def _item_tags(item: dict) -> List[str]:
+    return [str(t).strip().lower() for t in (item.get("tags") or [])]
+
+
+def _enforce_r18(items: List[dict]) -> List[dict]:
+    """r18=0 时严格排除 R-18：API 的 r18 字段与 pixiv 的 R-18 标签不完全一致
+    （实测存在字段 false 但图片带 R-18 标签的擦边图），两者任一命中即排除。"""
+    try:
+        r18_cfg = int(_get_cfg("r18", 1))
+    except (TypeError, ValueError):
+        r18_cfg = 1
+    if r18_cfg != 0:
+        return items
+    return [it for it in items if not it.get("r18") and "r-18" not in _item_tags(it)]
+
+
+def _filter_lolicon_items(items: List[dict], wanted: List[str]) -> List[dict]:
+    """客户端复核搜索结果。
+
+    Lolicon 的 tag 匹配偏宽松：搜 miku 会按拼音/别名混入中野三玖、田尻未来等
+    其他角色（实测确认）。策略：优先保留标签精确命中的图片；若无精确命中
+    再信任 API 原始结果（其别名库能正确处理「三玖」等中文别名，不宜一刀切丢弃）。
+    """
+    if wanted:
+        strict = [it for it in items if any(w in _item_tags(it) for w in wanted)]
+        if strict:
+            items = strict
+    return _enforce_r18(items)
+
+
 async def _search_lolicon(word: str) -> List[dict]:
-    """通过 Lolicon API 获取涩图（source=lolicon 时使用，tag 为 OR 匹配）。"""
+    """通过 Lolicon API 获取涩图（source=lolicon 时使用）。
+
+    - 多关键词按空格拆分，tag 间为 OR 关系；多词时同时携带完整短语标签
+    - API 响应波动大（实测 1s~20s+，偶发超时），失败自动重试一次
+    - 结果经 _filter_lolicon_items 客户端复核
+    """
+    words = word.split()[:5]
     params: List[tuple] = [
         ("r18", str(_get_cfg("r18", 1))),
         ("num", str(_get_cfg("num", 3))),
     ]
-    for t in word.split():
-        params.append(("tag", t))
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            r = await client.get("https://api.lolicon.app/setu/v2", params=params)
-            if r.status_code == 200:
-                body = r.json()
-                if not body.get("error"):
-                    return body.get("data") or []
-                logger.warning(f"[miku_setu] Lolicon 返回错误: {body.get('error')}")
-    except Exception as e:
-        logger.warning(f"[miku_setu] Lolicon 搜索失败: {e}")
+    wanted: List[str] = []
+    if words:
+        tag_candidates = [" ".join(words)] + words if len(words) > 1 else list(words)
+        for t in tag_candidates:
+            key = t.strip().lower()
+            if key and key not in wanted:
+                wanted.append(key)
+                params.append(("tag", t.strip()))
+    for attempt in (1, 2):
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.get("https://api.lolicon.app/setu/v2", params=params)
+                if r.status_code == 200:
+                    body = r.json()
+                    if not body.get("error"):
+                        return _filter_lolicon_items(body.get("data") or [], wanted)
+                    logger.warning(f"[miku_setu] Lolicon 返回错误: {body.get('error')}")
+                    return []
+                logger.warning(f"[miku_setu] Lolicon HTTP {r.status_code}（第{attempt}次）")
+        except Exception as e:
+            logger.warning(f"[miku_setu] Lolicon 请求失败（第{attempt}次）: {e}")
+        if attempt == 1:
+            await asyncio.sleep(1.5)
     return []
 
 
@@ -241,22 +300,34 @@ async def _setu_handler(bot: Bot, event: MessageEvent, args: Message = CommandAr
         if not items:
             await setu_cmd.finish(f"❌ 未找到「{tag or '涩图'}」相关图片，换个词试试")
 
-    sent = 0
     for item in items:
-        if sent >= 3:
-            break
         img_url = _build_image_url(item)
         if not img_url:
             continue
         try:
-            msg_id = _extract_msg_id(await bot.send(event, MessageSegment.image(img_url)))
-            sent += 1
+            # 协议端发图前需先下载/上传图片，响应可能超过默认 30s；
+            # 超时会导致拿不到 message_id 而无法撤回，故按次放宽到 90s
+            if isinstance(event, GroupMessageEvent):
+                ret = await bot.call_api(
+                    "send_group_msg",
+                    group_id=event.group_id,
+                    message=MessageSegment.image(img_url),
+                    _timeout=90,
+                )
+            else:
+                ret = await bot.call_api(
+                    "send_private_msg",
+                    user_id=event.user_id,
+                    message=MessageSegment.image(img_url),
+                    _timeout=90,
+                )
+            msg_id = _extract_msg_id(ret)
             _schedule_withdraw(bot, event, msg_id, withdraw)
+            return
         except Exception as e:
-            logger.warning(f"[miku_setu] 发送图片失败: {e}")
+            logger.warning(f"[miku_setu] 发送图片失败，尝试下一候选: {e}")
 
-    if sent == 0:
-        await setu_cmd.finish("❌ 图片发送失败，请检查代理配置")
+    await setu_cmd.finish("❌ 图片发送失败，请检查代理配置")
 
 
 register_plugin_info(

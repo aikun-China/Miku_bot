@@ -1,12 +1,10 @@
 """
-Miku 成分姬 (ddcheck 适配版)
-=============================
-基于 nonebot-plugin-ddcheck / zhenxun-nonebot-plugin-ddcheck 重构，
-适配 MikuBot 架构：
+成分姬子模块（原 miku_ddcheck 独立插件，2026-10-03 并入 miku_bilibili）
+====================================================================
+基于 nonebot-plugin-ddcheck / zhenxun-nonebot-plugin-ddcheck 重构：
 
 - 命令：查成分 <B站用户名/UID>
-- 凭证：不再读取 .env，改为动态读取 config/bot.yaml 的 bilibili_credential
-        （复用 miku_bilibili 的统一凭证存储，实现「一次扫码，永久查成分」）
+- 凭证：复用本插件统一凭证存储（config/bot.yaml -> bilibili_credential）
 - 联动：未登录时提示先发送 `b站登录` 扫码
 - 安全：绝不在日志/群聊中明文输出 SESSDATA
 - 网络：使用 curl_cffi（浏览器指纹），异步优先
@@ -14,12 +12,8 @@ Miku 成分姬 (ddcheck 适配版)
 """
 
 import asyncio
-import sys
 from pathlib import Path
 from typing import Dict, List, Optional
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
 
 from nonebot import on_command
 from nonebot.adapters.onebot.v11 import (
@@ -27,40 +21,23 @@ from nonebot.adapters.onebot.v11 import (
     MessageEvent,
     Message,
     MessageSegment,
-    GroupMessageEvent,
 )
-from nonebot.plugin import PluginMetadata
 from nonebot.log import logger
 from nonebot.params import CommandArg
 from curl_cffi import requests as curl_requests
 
-# ── 复用 miku_bilibili 的统一凭证（config/bot.yaml -> bilibili_credential）──
-from plugins.miku_bilibili.credential import (
-    get_credential,
+from .credential import (
     check_login_status,
     get_headers_with_cookie,
     get_wbi_keys,
     sign_wbi,
 )
-
-try:
-    from utils.plugin_registry import register_plugin_info
-except ImportError:
-    register_plugin_info = lambda *args, **kwargs: None
+from .config import DATA_DIR
 
 try:
     from plugins.miku_stats import record_plugin_usage
 except ImportError:
     record_plugin_usage = lambda *args, **kwargs: None
-
-
-__plugin_meta__ = PluginMetadata(
-    name="Miku成分姬",
-    description="查询B站关注列表的VTuber成分（ddcheck 适配版）",
-    usage="查成分 <B站用户名/UID>",
-    type="application",
-    supported_adapters={"~onebot.v11"},
-)
 
 
 _HEADERS = {
@@ -90,13 +67,13 @@ async def _fetch_json(url: str, params: dict = None, headers: dict = None) -> Op
         ) as client:
             r = await client.get(url, params=params)
             if r.status_code in (401, 403):
-                logger.warning("[miku_ddcheck] B站请求 401/403，凭证可能失效")
+                logger.warning("[miku_bilibili] 成分查询 B站请求 401/403，凭证可能失效")
                 return None
             if r.status_code != 200:
                 return None
             return r.json()
     except Exception as e:
-        logger.warning(f"[miku_ddcheck] 请求失败 {url}: {e}")
+        logger.warning(f"[miku_bilibili] 成分查询请求失败 {url}: {e}")
         return None
 
 
@@ -118,7 +95,7 @@ async def get_uid(keyword: str) -> Optional[str]:
         if result:
             return str(result[0].get("mid"))
     except Exception as e:
-        logger.warning(f"[miku_ddcheck] 用户名搜索失败: {e}")
+        logger.warning(f"[miku_bilibili] 成分查询用户名搜索失败: {e}")
     return None
 
 
@@ -166,7 +143,7 @@ async def get_following(uid: str) -> List[Dict]:
                 break
             pn += 1
     except Exception as e:
-        logger.warning(f"[miku_ddcheck] 获取关注列表失败: {e}")
+        logger.warning(f"[miku_bilibili] 获取关注列表失败: {e}")
     return results
 
 
@@ -177,7 +154,7 @@ async def get_vtb_list() -> List[Dict]:
         if isinstance(data, list):
             return data
     except Exception as e:
-        logger.warning(f"[miku_ddcheck] 获取 VTB 列表失败: {e}")
+        logger.warning(f"[miku_bilibili] 获取 VTB 列表失败: {e}")
     return []
 
 
@@ -288,7 +265,7 @@ def render_component_image(user_name: str, uid: str, component: List[Dict]) -> P
         draw.rectangle([margin, y + 38, margin + bar_w, y + 44], fill=(96, 165, 250))
         y += line_h
 
-    out_dir = PROJECT_ROOT / "data" / "miku_ddcheck"
+    out_dir = DATA_DIR / "ddcheck"
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"component_{uid}.png"
     img.save(path)
@@ -334,7 +311,7 @@ async def _ddcheck_handler(bot: Bot, event: MessageEvent, args: Message = Comman
     if not uid:
         await ddcheck_cmd.finish(f"❌ 未找到用户「{keyword}」，请检查名称或直接使用 UID")
 
-    record_plugin_usage("miku_ddcheck", user_id=str(event.user_id), command_name="查成分")
+    record_plugin_usage("miku_bilibili", user_id=str(event.user_id), command_name="查成分")
 
     # 并发获取关注列表与用户名
     user_name_task = asyncio.ensure_future(get_user_name(uid))
@@ -365,22 +342,9 @@ async def _ddcheck_handler(bot: Bot, event: MessageEvent, args: Message = Comman
             f"✅ {user_name} 的成分：共关注 {len(following)} 人，匹配 {sum(c['count'] for c in component)} 位 VTuber"
         )
     except Exception as e:
-        logger.error(f"[miku_ddcheck] 渲染成分图片失败: {e}", exc_info=True)
+        logger.error(f"[miku_bilibili] 渲染成分图片失败: {e}", exc_info=True)
         # 文本兜底
         lines = [f"{user_name}（UID:{uid}）的成分："]
         for row in component:
             lines.append(f"  {row['name']}: {row['count']} ({row['percent']}%)")
         await ddcheck_cmd.finish("\n".join(lines))
-
-
-register_plugin_info(
-    "miku_ddcheck",
-    name="Miku成分姬",
-    icon="🔍",
-    order=9,
-    description="查询B站关注列表的VTuber成分（复用统一B站凭证）",
-    commands=["查成分"],
-    usage="查成分 <B站用户名/UID>",
-)
-
-logger.info("[miku_ddcheck] 成分姬插件已加载（复用 config/bot.yaml 统一凭证）")
