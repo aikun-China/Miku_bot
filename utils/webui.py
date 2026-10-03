@@ -192,7 +192,7 @@ def _device_auth_enabled() -> bool:
         data = _load_yaml()
         webui = data.get("webui", {}) if isinstance(data, dict) else {}
         if isinstance(webui, dict):
-            val = webui.get("device_auth", True)
+            val = webui.get("device_auth", False)
             if isinstance(val, bool):
                 return val
             if isinstance(val, str):
@@ -201,7 +201,7 @@ def _device_auth_enabled() -> bool:
                 return True
     except Exception:
         pass
-    return True  # 默认开启（安全性优先）
+    return False  # 默认关闭：设备授权与新登录流程(/auth/login不签发设备令牌)脱节会死锁428
 
 
 # ===================== 工具函数 =====================
