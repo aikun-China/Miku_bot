@@ -10,14 +10,15 @@ Miku 涩图 (send_setu 适配版)
 - 图片：两种源的图片 URL 均替换为自定义代理域名（pixiv_proxy_host，
         自研 Worker pixiv.aikun-bili.top，仅图片链路可用）
 - 配置：source / r18 / num / pixiv_proxy_host / pixiv_refresh_token 写入 config/bot.yaml
-- 图片发送：NoneBot2 原生 MessageSegment.image；每次命令只发一张
-          （num 为候选数量，某张发送失败自动换下一候选，不再连发多图）
+- 图片发送：bot 进程内预下载图片后以 base64 发送（协议端无需再 fetch URL，
+          规避其 fetch 失败/超时）；每次命令只发一张
+          （num 为候选数量，某张下载/发送失败自动换下一候选，不再连发多图）
 - 安全：refresh_token 不输出到日志/群聊
 - 触发：群聊+私聊均可用；priority=5 高于 miku_ai 的全消息监听(10)，
         命令命中后 block=True 阻断传播，避免 AI 插件对同一消息重复回复
-- 撤回：withdraw_seconds（默认 60，0=关闭）秒后自动撤回提示与图片；计时起点为
-        各消息自身发送成功时；群聊/私聊均尝试（私聊撤回取决于协议端支持，
-        失败会记录日志便于排查）
+- 撤回：withdraw_seconds（默认 60，0=关闭）秒后自动撤回**图片**（2026-10-03 起
+        不再撤回文字提示，避免群内出现两条撤回记录）；计时起点为图片发送成功时；
+        群聊/私聊均尝试（私聊撤回取决于协议端支持，失败会记录日志便于排查）
 """
 
 import asyncio
@@ -256,6 +257,24 @@ def _build_image_url(item: dict) -> Optional[str]:
     return img_url
 
 
+async def _download_image(url: str) -> Optional[bytes]:
+    """bot 进程内预下载图片，供 base64 发送（协议端不再自行 fetch URL）。"""
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            r = await client.get(url)
+            if r.status_code == 200 and r.content:
+                if len(r.content) > 20 * 1024 * 1024:
+                    logger.warning(
+                        f"[miku_setu] 图片过大（{len(r.content) // 1024 // 1024}MB），跳过该候选"
+                    )
+                    return None
+                return r.content
+            logger.warning(f"[miku_setu] 图片下载 HTTP {r.status_code}: {url}")
+    except Exception as e:
+        logger.warning(f"[miku_setu] 图片下载失败: {e}")
+    return None
+
+
 setu_cmd = on_command(
     "涩图",
     aliases={"来点涩图", "涩涩", "setu"},
@@ -288,14 +307,12 @@ async def _setu_handler(bot: Bot, event: MessageEvent, args: Message = CommandAr
                 "❌ 未获取到 Pixiv access_token\n"
                 "请检查 config/bot.yaml 中的 pixiv_refresh_token 是否有效"
             )
-        tip_id = _extract_msg_id(await setu_cmd.send(f"🔍 正在搜索「{tag}」的涩图..."))
-        _schedule_withdraw(bot, event, tip_id, withdraw)
+        await setu_cmd.send(f"🔍 正在搜索「{tag}」的涩图...")
         items = await _search_illust(token, tag)
         if not items:
             await setu_cmd.finish(f"❌ 未搜索到「{tag}」的插画")
     else:
-        tip_id = _extract_msg_id(await setu_cmd.send(f"🔍 正在获取「{tag or '随机涩图'}」..."))
-        _schedule_withdraw(bot, event, tip_id, withdraw)
+        await setu_cmd.send(f"🔍 正在获取「{tag or '随机涩图'}」...")
         items = await _search_lolicon(tag)
         if not items:
             await setu_cmd.finish(f"❌ 未找到「{tag or '涩图'}」相关图片，换个词试试")
@@ -304,21 +321,24 @@ async def _setu_handler(bot: Bot, event: MessageEvent, args: Message = CommandAr
         img_url = _build_image_url(item)
         if not img_url:
             continue
+        img_bytes = await _download_image(img_url)
+        if not img_bytes:
+            continue
         try:
-            # 协议端发图前需先下载/上传图片，响应可能超过默认 30s；
-            # 超时会导致拿不到 message_id 而无法撤回，故按次放宽到 90s
+            # 图片已转为 base64 内联发送，协议端无需再 fetch URL；
+            # _timeout 按次放宽到 90s，保证大图上传拿到 message_id 以便撤回
             if isinstance(event, GroupMessageEvent):
                 ret = await bot.call_api(
                     "send_group_msg",
                     group_id=event.group_id,
-                    message=MessageSegment.image(img_url),
+                    message=MessageSegment.image(img_bytes),
                     _timeout=90,
                 )
             else:
                 ret = await bot.call_api(
                     "send_private_msg",
                     user_id=event.user_id,
-                    message=MessageSegment.image(img_url),
+                    message=MessageSegment.image(img_bytes),
                     _timeout=90,
                 )
             msg_id = _extract_msg_id(ret)

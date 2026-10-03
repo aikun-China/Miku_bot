@@ -94,3 +94,12 @@ utils/check_deps.py
 run_ollama.bat
 start_bot.bat
 .wrangler/
+
+# =====================================
+# Private runtime configs (removed from tracking, history rewritten 2026-10-03)
+# =====================================
+config/bot.yaml
+config/group_welcome.json
+config/welcome_imgs/
+启动.bat
+
