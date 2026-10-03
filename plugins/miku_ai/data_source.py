@@ -6,6 +6,9 @@ import json
 import random
 import time
 import re
+import asyncio
+from datetime import datetime
+from html import unescape as _html_unescape
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from nonebot.log import logger
@@ -13,7 +16,12 @@ import httpx
 
 from .config import get_config, PROJECT_ROOT
 from .memory_backend import ChatHistoryManager
+from .memory_store import MemoryStore, build_namespaces
 from .exception import AIResultException
+
+# ── AI 自动提炼长期记忆：轮次计数与后台任务强引用 ──
+_extract_rounds: Dict[str, int] = {}
+_background_tasks: set = set()
 
 # ── 模型类型配置表 ──
 # 支持多模态（图片输入）的模型集合，不在此表中的一律视为纯文本模型
@@ -240,9 +248,160 @@ def build_system_prompt(user_id: str = "", user_name: str = "", is_group: bool =
     return "\n".join(parts)
 
 
+# ── 联网搜索（意图识别 + 结果注入，引擎链：Firecrawl免密钥 → Bing抓取，失败静默跳过）──
+_WEB_SEARCH_KEYWORDS = (
+    "搜索", "搜一下", "搜搜", "查一下", "查查", "查询", "帮我查", "百度", "谷歌", "必应", "维基",
+    "新闻", "热搜", "时事", "头条", "天气", "气温", "下雨", "下雪", "台风", "地震",
+    "比分", "排行榜", "排名", "汇率", "股价", "多少钱", "价格", "发售", "上线", "发布会",
+    "放假", "假期", "几号", "几点", "今天", "最新", "剧情", "生日",
+)
+
+_BING_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+
+
+def _needs_web_search(text: str) -> bool:
+    if not bool(get_config("web_search_enabled", True)):
+        return False
+    t = (text or "").strip()
+    if len(t) < 4 or len(t) > 200:
+        return False
+    return any(k in t for k in _WEB_SEARCH_KEYWORDS)
+
+
+async def _search_firecrawl(query: str, limit: int, timeout: float) -> List[Tuple[str, str, str]]:
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        r = await client.post(
+            "https://api.firecrawl.dev/v2/search",
+            json={"query": query, "limit": limit},
+            headers={"Content-Type": "application/json"},
+        )
+        r.raise_for_status()
+        items = ((r.json() or {}).get("data") or {}).get("web") or []
+    results = []
+    for it in items[:limit]:
+        title = str(it.get("title") or "").strip()
+        desc = str(it.get("description") or "").strip()
+        url = str(it.get("url") or "").strip()
+        if title or desc:
+            results.append((title or "（无标题）", desc, url))
+    return results
+
+
+async def _search_bing(query: str, limit: int, timeout: float) -> List[Tuple[str, str, str]]:
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        r = await client.get(
+            "https://cn.bing.com/search", params={"q": query},
+            headers={"User-Agent": _BING_UA, "Accept-Language": "zh-CN,zh;q=0.9"},
+        )
+        r.raise_for_status()
+        page = r.text
+    results = []
+    for item in re.findall(r'<li class="b_algo".*?</li>', page, re.S)[:limit]:
+        m = re.search(r'<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', item, re.S)
+        if not m:
+            continue
+        title = _html_unescape(re.sub(r"<[^>]+>", "", m.group(2))).strip()
+        sm = re.search(r"<p[^>]*>(.*?)</p>", item, re.S)
+        snippet = _html_unescape(re.sub(r"<[^>]+>", "", sm.group(1))).strip() if sm else ""
+        if title or snippet:
+            results.append((title or "（无标题）", snippet, m.group(1)))
+    return results
+
+
+def _format_search_block(results: List[Tuple[str, str, str]], engine: str) -> str:
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    lines = [f"【联网搜索结果｜engine={engine}，检索时间 {now}】以下仅供核实参考，与当前话题无关就忽略，"
+             "不要逐条复述、不要变成百科式罗列，自然融入回答："]
+    for i, (title, snippet, url) in enumerate(results, 1):
+        lines.append(f"{i}. {title}｜{snippet}" + (f"｜来源 {url}" if url else ""))
+    return "\n".join(lines)
+
+
+async def _web_search(query: str) -> str:
+    limit = int(get_config("web_search_max_results", 5) or 5)
+    timeout = float(get_config("web_search_timeout", 8) or 8)
+    for name, fn in (("firecrawl", _search_firecrawl), ("bing", _search_bing)):
+        try:
+            results = await fn(query, limit, timeout)
+            if results:
+                logger.info(f"[miku_ai] 联网搜索 {len(results)} 条 (engine={name}): {query[:40]}")
+                return _format_search_block(results, name)
+        except Exception as e:
+            logger.warning(f"[miku_ai] 搜索引擎 {name} 失败，尝试下一个: {type(e).__name__}: {e}")
+    logger.info(f"[miku_ai] 联网搜索无结果，跳过: {query[:40]}")
+    return ""
+
+
+async def _ai_search_decision(history: List[Dict], user_text: str) -> Tuple[Optional[bool], str]:
+    """AI 自主判断是否需要联网搜索；返回 (need_search, query)，判断失败返回 (None, "")"""
+    api_mode = str(get_config("api_mode", "cloud") or "cloud").lower()
+    router_model = ""
+    if api_mode == "cloud":
+        router_model = get_config("cloud_text_model", "") or get_config("cloud_model", "") or ""
+    lines = []
+    for m in history[-6:]:
+        content = m.get("content", "")
+        content = content if isinstance(content, str) else str(content)
+        content = _strip_think_blocks(content).strip()[:100]
+        if content:
+            lines.append(f"{'用户' if m.get('role') == 'user' else 'Miku'}：{content}")
+    context_text = "\n".join(lines) if lines else "（无）"
+    prompt = (
+        "你是聊天机器人的搜索决策器，判断回复用户最新消息前是否需要联网搜索。\n"
+        "需要搜索：实时信息（新闻/天气/比分/价格/发售动态）；事实核实（人物/作品/歌曲/剧情/设定，"
+        "尤其是VOCALOID、虚拟歌手相关，不确定就搜）；消息里出现你不认识或不完全确定的具体名词。\n"
+        "不需要：日常闲聊、问候、情感陪伴、观点讨论。\n"
+        "注意结合聊天上下文理解指代（如\"他\"\"那首歌\"指的是谁/什么）。\n"
+        '只输出JSON：{"need_search": true或false, "query": "搜索关键词"}，'
+        "不需要搜索时query为空字符串，不要输出任何其他内容。\n\n"
+        f"【最近聊天】\n{context_text}\n\n【用户最新消息】{user_text[:200]}"
+    )
+    try:
+        resp = await _call_ai_api(
+            [{"role": "user", "content": prompt}],
+            temperature=0.0, max_tokens=120, request_timeout=15,
+            model=router_model, thinking=False,
+        )
+        resp = _strip_think_blocks(resp)
+        m = re.search(r"\{[\s\S]*?\}", resp)
+        if not m:
+            return None, ""
+        data = json.loads(m.group(0))
+        return bool(data.get("need_search")), str(data.get("query") or "").strip()[:60]
+    except Exception as e:
+        logger.warning(f"[miku_ai] AI搜索判断失败，退回关键词判断: {type(e).__name__}: {e}")
+        return None, ""
+
+
+# ── API 并发限制：多群同时触发时排队，防低配机过载与上游限流（api_max_concurrency，默认2） ──
+_api_semaphore: Optional[asyncio.Semaphore] = None
+
+
+def _get_api_semaphore() -> asyncio.Semaphore:
+    global _api_semaphore
+    if _api_semaphore is None:
+        _api_semaphore = asyncio.Semaphore(max(1, int(get_config("api_max_concurrency", 2) or 2)))
+    return _api_semaphore
+
+
+async def _post_with_retry(client: httpx.AsyncClient, url: str,
+                           headers: Dict, body: Dict) -> httpx.Response:
+    """429/5xx 属瞬时故障：指数退避重试（2s→4s，最多2次），其余状态码原样返回由调用方分级处理"""
+    r = await client.post(url, headers=headers, json=body)
+    for attempt in range(2):
+        if r.status_code not in (429, 500, 502, 503, 504):
+            break
+        wait = 2.0 * (2 ** attempt)
+        logger.warning(f"[miku_ai] API {r.status_code}，{wait:.0f}s后重试({attempt + 1}/2): {r.text[:120]}")
+        await asyncio.sleep(wait)
+        r = await client.post(url, headers=headers, json=body)
+    return r
+
+
 async def _call_ai_api(messages: List[Dict], temperature: float = 1.0,
                        max_tokens: int = 0, request_timeout: int = 0,
-                       model: str = "") -> str:
+                       model: str = "", thinking: bool = True) -> str:
     api_mode = str(get_config("api_mode", "cloud") or "cloud").lower()
     api_key = ""
     base_url = ""
@@ -291,7 +450,7 @@ async def _call_ai_api(messages: List[Dict], temperature: float = 1.0,
         "temperature": temperature,
     }
     # 纯文本模型才启用 thinking（多模态模型通常不支持）
-    if is_text_model:
+    if is_text_model and thinking:
         body["thinking"] = {"type": "enabled"}
     if max_tokens and max_tokens > 0:
         body["max_tokens"] = max_tokens
@@ -299,8 +458,8 @@ async def _call_ai_api(messages: List[Dict], temperature: float = 1.0,
     timeout = request_timeout or int(get_config("request_timeout", 30) or 30)
 
     try:
-        async with httpx.AsyncClient(timeout=float(timeout)) as client:
-            r = await client.post(url, headers=headers, json=body)
+        async with _get_api_semaphore(), httpx.AsyncClient(timeout=float(timeout)) as client:
+            r = await _post_with_retry(client, url, headers, body)
 
             # 400 错误分级处理
             if r.status_code == 400:
@@ -524,9 +683,11 @@ def split_reply_segments(text: str, max_length: int = 150) -> List[str]:
 
 async def process_chat(user_id: str, user_name: str, text: str,
                        image_urls: List[str] = None, group_id: str = "",
-                       image_files: List[str] = None) -> Tuple[str, Dict]:
+                       image_files: List[str] = None,
+                       message_id: str = "") -> Tuple[str, Dict]:
     """
     处理AI聊天（leekchat风格集成版）
+    message_id：QQ 消息号，用于与被动记录钩子写入的原始消息去重合并（upsert 增强）
     返回: (回复文本, 附加信息dict)
     """
     is_group = bool(group_id)
@@ -612,8 +773,10 @@ async def process_chat(user_id: str, user_name: str, text: str,
     # --- leekchat 风格处理 ---
     humanize = get_humanize_engine()
 
-    # 获取聊天记录
-    history = get_history_manager().get_raw_messages(session_id, limit=50)
+    # 获取聊天记录（被动记录钩子会先把当前消息写入，读取时排除当前消息避免重复）
+    history = get_history_manager().get_raw_messages(
+        session_id, limit=50, exclude_message_id=str(message_id or "")
+    )
 
     target_message = {
         "user_name": user_name,
@@ -672,10 +835,41 @@ async def process_chat(user_id: str, user_name: str, text: str,
         current_emotion=emotion_state.current if emotion_state else None,
     )
 
+    # ── 长期记忆召回：命名空间隔离（群聊=个人画像+群公共，私聊=个人），注入动态上下文 ──
+    if bool(get_config("memory_enabled", True)) and (text or user_content):
+        try:
+            recalled = MemoryStore.recall(
+                build_namespaces(user_id, group_id), text or user_content
+            )
+            if recalled:
+                memory_block = ("【相关长期记忆】（以下是你此前记住的关于该用户/群的信息，"
+                                "可自然引用，语气不要像背档案，无关就忽略）\n"
+                                + "\n".join(f"- {m['content']}" for m in recalled))
+                dynamic_context = f"{dynamic_context}\n\n{memory_block}" if dynamic_context else memory_block
+        except Exception as e:
+            logger.warning(f"[miku_ai] 长期记忆召回失败: {e}")
+
+    # ── 联网搜索：AI自主判断优先（带上下文能理解指代），判断失败退回关键词（仅文本消息，不落历史） ──
+    if not processed_image_urls and bool(get_config("web_search_enabled", True)):
+        search_query = ""
+        if bool(get_config("web_search_ai_judge", True)):
+            need, q = await _ai_search_decision(history, text)
+            if need:
+                search_query = re.sub(r"\s+", " ", (q or (text or "").strip()))[:60]
+            elif need is None:
+                if _needs_web_search(text):
+                    search_query = re.sub(r"\s+", " ", (text or "").strip())[:60]
+        elif _needs_web_search(text):
+            search_query = re.sub(r"\s+", " ", (text or "").strip())[:60]
+        if search_query:
+            search_block = await _web_search(search_query)
+            if search_block:
+                dynamic_context = f"{dynamic_context}\n\n{search_block}" if dynamic_context else search_block
+
     # 构建上下文消息
     context_messages = get_history_manager().get_context_messages(
         session_id, is_group=is_group, system_prompt=system_prompt,
-        bot_nickname=bot_nickname
+        bot_nickname=bot_nickname, exclude_message_id=str(message_id or "")
     )
 
     # ── 用户消息过长自动截断（在构建context之前） ──
@@ -779,17 +973,21 @@ async def process_chat(user_id: str, user_name: str, text: str,
     if sticker.success and sticker.emoji_path:
         reply = sticker.cleaned_text
 
-    # 保存历史
+    # 保存历史（用户消息带 message_id：与被动记录的原始消息 upsert 合并，写入识图增强内容）
     get_history_manager().append_message(
         session_id, "user", user_content,
         user_id=user_id, user_name=user_name,
         images=processed_image_urls if processed_image_urls else None,
-        is_group=is_group,
+        is_group=is_group, message_id=str(message_id or ""),
     )
     get_history_manager().append_message(
         session_id, "assistant", reply,
         is_group=is_group,
     )
+
+    # ── AI 自动提炼长期记忆（混合模式：按轮次触发后台提炼，不阻塞回复） ──
+    if bool(get_config("memory_enabled", True)) and bool(get_config("memory_auto_extract", True)):
+        _maybe_schedule_memory_extract(session_id, user_id, user_name, group_id)
 
     # 好感度
     favor_info = _maybe_update_favor(user_id, text, reply)
@@ -802,6 +1000,76 @@ async def process_chat(user_id: str, user_name: str, text: str,
     }
 
     return reply, extra
+
+
+def _maybe_schedule_memory_extract(session_id: str, user_id: str,
+                                   user_name: str, group_id: str):
+    """按会话计数对话轮数，每 N 轮安排一次后台记忆提炼"""
+    _extract_rounds[session_id] = _extract_rounds.get(session_id, 0) + 1
+    every = max(3, int(get_config("memory_extract_every", 10) or 10))
+    if _extract_rounds[session_id] % every != 0:
+        return
+    task = asyncio.create_task(_extract_memories(session_id, user_id, user_name, group_id))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    logger.info(f"[miku_ai] 已安排后台记忆提炼（第 {_extract_rounds[session_id]} 轮触发）")
+
+
+async def _extract_memories(session_id: str, user_id: str,
+                            user_name: str, group_id: str):
+    """
+    轻量 LLM 调用：从最近对话中提炼值得长期记住的用户事实，写入个人画像命名空间。
+    失败静默（仅告警），绝不影响聊天主流程。
+    """
+    try:
+        recent = get_history_manager().get_raw_messages(session_id, limit=24)
+        dialog_lines = []
+        for m in recent:
+            content = m.get("content", "")
+            if isinstance(content, list):
+                content = " ".join(
+                    p.get("text", "") for p in content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                ).strip()
+            if not isinstance(content, str) or not content:
+                continue
+            who = m.get("user_name") or (user_name if m.get("role") == "user" else "Miku")
+            dialog_lines.append(f"{who}: {content[:200]}")
+        dialog = "\n".join(dialog_lines)
+        if len(dialog) < 80:
+            return
+        prompt = (
+            "以下是一段与机器人 Miku 的群聊/私聊对话记录。请从中提炼值得长期记住的"
+            "「用户事实」（如：喜欢的歌手/游戏/动画、个人背景、明确表达的喜好与厌恶、"
+            "重要计划），不要提炼问候闲聊、表情包、正在讨论的临时话题。\n"
+            "只输出 JSON 字符串数组，每条为一句话事实、以「用户」开头，最多 5 条；"
+            "没有值得记的就输出 []。不要输出其他任何内容。\n"
+            "示例输出：[\"用户喜欢初音未来\", \"用户在准备考研\"]\n\n"
+            f"对话记录：\n{dialog[-3000:]}"
+        )
+        resp = await _call_ai_api(
+            [{"role": "user", "content": prompt}],
+            temperature=0.1, max_tokens=300, request_timeout=30, thinking=False,
+        )
+        resp = resp.strip()
+        m = re.search(r"\[.*\]", resp, re.DOTALL)
+        if not m:
+            return
+        facts = json.loads(m.group(0))
+        if not isinstance(facts, list):
+            return
+        ns = build_namespaces(user_id, group_id)[0] if user_id else ""
+        if not ns:
+            return
+        saved = 0
+        for fact in facts[:8]:
+            if isinstance(fact, str) and fact.strip():
+                MemoryStore.remember(ns, fact.strip()[:120], source="ai")
+                saved += 1
+        if saved:
+            logger.info(f"[miku_ai] 自动提炼记忆 {saved} 条 → {ns}")
+    except Exception as e:
+        logger.warning(f"[miku_ai] 自动提炼记忆失败: {e}")
 
 
 def _maybe_update_favor(user_id: str, user_text: str, reply_text: str) -> Dict:

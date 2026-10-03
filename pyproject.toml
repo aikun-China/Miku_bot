@@ -20,7 +20,7 @@ dependencies = [
     "APScheduler>=3.10.0",
     "psutil>=7.0.0",
     "playwright>=1.60.0",
-    "Pillow>=9.0.0,<10.0.0",
+    "Pillow>=10.4.0,<11.0.0",
     "imagehash>=4.3.0",
     "yt-dlp>=2024.12.01",
     "curl-cffi>=0.7.0",
@@ -33,6 +33,11 @@ dependencies = [
 [tool.nonebot]
 plugin_dirs = ["plugins"]
 builtin_plugins = ["echo"]
+
+[tool.uv]
+override-dependencies = [
+    "pillow>=10.4.0,<11",
+]
 
 [[tool.uv.index]]
 name = "tencent-mirror"

@@ -661,8 +661,10 @@ async def _login_handler(bot: Bot, event: MessageEvent):
     os.makedirs(qrcode_dir, exist_ok=True)
     qrcode_path = os.path.join(qrcode_dir, f"bili_qrcode_{qrcode_key[:8]}.png")
     
-    # 🔴 Bug 修复：二维码此前用 file:/// URI 发送（部分协议端无法打开）
-    #    改为先下载到本地，再用 base64 发送（兼容性最好），失败回退本地路径 Path 对象
+    # 🔴 Bug 修复：协议端 SnowLuma（QQ官方机器人桥接）不支持 base64:// 图片段，会静默降级为
+    #    纯文本（二维码变 base64 文本）且无错误回传，导致旧 fallback 永不触发；
+    #    其 file:/// 已实测可用（点歌语音验证）。发送顺序改为：本地 Path → 在线 URL → base64，
+    #    并单独补发一条扫码链接作为零图片依赖的保底；SnowLuma 发图响应慢，_timeout 放宽到 90s
     try:
         async with curl_requests.AsyncSession(impersonate="chrome131", timeout=10.0) as client:
             r = await client.get(qrcode_api)
@@ -673,8 +675,22 @@ async def _login_handler(bot: Bot, event: MessageEvent):
         logger.warning(f"[miku_bilibili] 下载二维码失败: {e}")
 
     image_segment = None
-    # 方案A（推荐）：本地二维码转 base64 发送，协议端无需访问本地文件系统
+    # 方案A（当前环境首选）：本地文件路径，SnowLuma 同机读取后走富媒体上传
     if Path(qrcode_path).exists():
+        try:
+            image_segment = MessageSegment.image(_Path(qrcode_path))
+            logger.info("[miku_bilibili] 二维码以本地文件路径发送")
+        except Exception as e:
+            logger.warning(f"[miku_bilibili] 本地路径发送二维码失败: {e}")
+    # 方案B：在线 URL 直发，SnowLuma 会先下载原图再上传
+    if image_segment is None:
+        try:
+            image_segment = MessageSegment.image(qrcode_api)
+            logger.info("[miku_bilibili] 二维码以在线 URL 发送")
+        except Exception as e:
+            logger.warning(f"[miku_bilibili] 在线 URL 发送二维码失败: {e}")
+    # 方案C：base64（仅支持该 URI 方案的协议端有效，SnowLuma 会降级为文本）
+    if image_segment is None and Path(qrcode_path).exists():
         try:
             import base64 as _b64
             with open(qrcode_path, "rb") as f:
@@ -683,22 +699,26 @@ async def _login_handler(bot: Bot, event: MessageEvent):
             logger.info("[miku_bilibili] 二维码已用 base64 发送")
         except Exception as e:
             logger.warning(f"[miku_bilibili] base64 发送二维码失败: {e}")
-    # 方案B：直接用本地路径 Path 对象发送
-    if image_segment is None:
-        try:
-            image_segment = MessageSegment.image(_Path(qrcode_path))
-        except Exception as e:
-            logger.warning(f"[miku_bilibili] 本地路径发送二维码失败: {e}")
-    # 方案C：兜底发在线二维码 API
-    if image_segment is None:
-        image_segment = MessageSegment.image(qrcode_api)
 
-    await login_cmd.send(
+    qr_msg_head = (
         f"🔐 B站扫码登录\n\n"
         f"请使用B站APP扫描下方二维码登录\n"
         f"⏰ 二维码有效时间：180秒\n\n"
-        f"{image_segment}\n\n"
-        f"💡 登录成功后会自动保存凭证"
+    )
+    if image_segment is not None:
+        try:
+            await login_cmd.send(
+                f"{qr_msg_head}{image_segment}\n\n"
+                f"💡 登录成功后会自动保存凭证",
+                _timeout=90,
+            )
+        except Exception as e:
+            logger.warning(f"[miku_bilibili] 二维码消息发送异常（超时多为假失败，消息可能已发出）: {e}")
+    else:
+        await login_cmd.send(f"{qr_msg_head}❌ 二维码图片生成失败，请用下方链接登录")
+    # 零图片依赖保底：手机QQ点开链接唤起B站APP确认登录，等效扫码
+    await login_cmd.send(
+        f"🔗 图片无法显示？请在手机QQ点开下方链接，B站APP内确认登录（等效扫码）：\n{qr_url}"
     )
 
     poll_count = 0

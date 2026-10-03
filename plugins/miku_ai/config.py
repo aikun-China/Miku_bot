@@ -82,8 +82,12 @@ _AI_TEMPLATE = (
     "  group_max_queue: 3\n"
     "  # 私聊消息处理队列深度上限\n"
     "  private_max_queue: 5\n"
-    "  # 聊天记录持久化文件路径（相对项目根目录）\n"
-    "  history_file: data/ai_chat_history.json\n"
+    "  # 聊天记录数据库路径（SQLite，相对项目根目录）\n"
+    "  history_db_path: data/ai_chat_history.db\n"
+    "  # 上下文时间窗口（分钟，0=禁用）：只把最近N分钟内的历史消息发给AI，省token且不接隔夜旧话题\n"
+    "  context_time_window_minutes: 0\n"
+    "  # AI API 最大并发数（多群同时触发时限流排队，防低配机过载与API限流）\n"
+    "  api_max_concurrency: 2\n"
     "\n"
     "  # ── 好感度系统 ──\n"
     "  # 与 AI 聊天时，好感度变化的触发概率（0-100，例如 5 = 5%）\n"
@@ -105,6 +109,16 @@ _AI_TEMPLATE = (
     "  personality_file: plugins/miku_ai/personality.txt\n"
     "  # 是否在每次回复前重新读取提示词（方便调试，true=热更新 / false=只加载一次）\n"
     "  personality_reload: false\n"
+    "\n"
+    "  # ── 联网搜索 ──\n"
+    "  # 是否启用：命中关键词（天气/新闻/最新/搜一下等）时自动搜索并注入结果\n"
+    "  web_search_enabled: true\n"
+    "  # AI自主判断是否需要搜索（true=带上下文智能判断，能理解指代；false=仅关键词触发）\n"
+    "  web_search_ai_judge: true\n"
+    "  # 搜索结果条数上限\n"
+    "  web_search_max_results: 5\n"
+    "  # 单个搜索引擎超时（秒）\n"
+    "  web_search_timeout: 8\n"
     "\n"
     "  # ── 特殊人物识别 ──\n"
     "  # 通过 QQ 号和昵称识别特定的人，给 AI 加上身份设定\n"
@@ -206,14 +220,22 @@ _AI_TEMPLATE = (
     "  expression_enabled: false\n"
     "  expression_learn_after_messages: 100\n"
     "  expression_sample_size: 3\n"
-    "  # 记忆配置\n"
+    "  # ── 长期记忆系统 ──\n"
+    "  # 是否启用长期记忆（回复时召回注入 + AI自动提炼 + 记住/忘记命令）\n"
     "  memory_enabled: true\n"
-    "  memory_group_history_limit: 800\n"
-    "  memory_user_history_limit: 100\n"
-    "  # 话题配置\n"
-    "  topic_enabled: true\n"
-  "  topic_window_hours: 5\n"
-    "  topic_history_window_count: 3\n"
+    "  # 被动记录所有群聊/私聊消息进历史库（AI能得知没@它的群聊内容）\n"
+    "  passive_record_enabled: true\n"
+    "  # 长期记忆数据库路径（SQLite，相对项目根目录）\n"
+    "  memory_db_path: data/ai_memory.db\n"
+    "  # 记忆保留天数（0=永久保留）\n"
+    "  memory_ttl_days: 0\n"
+    "  # 每个命名空间（某人/某群）最多记忆条数，超出淘汰低权重旧记忆\n"
+    "  memory_max_per_namespace: 200\n"
+    "  # 每次回复最多注入的相关记忆条数\n"
+    "  memory_recall_top_k: 4\n"
+    "  # 是否让AI每隔N轮对话自动从聊天中提炼记忆\n"
+    "  memory_auto_extract: true\n"
+    "  memory_extract_every: 10\n"
     "\n"
     "  # ── 敏感词与内容安全 ──\n"
     "  # 是否启用敏感词过滤（true=后端直接拦截，不调用AI）\n"
@@ -256,8 +278,9 @@ _cfg = config_manager.register_plugin(
         "max_quoted_chars": 300,
         "group_max_queue": 3,
         "private_max_queue": 5,
-        "history_dir": "data/ai_chat_history",
-        "history_file": "data/ai_chat_history.json",
+        "history_db_path": "data/ai_chat_history.db",
+        "context_time_window_minutes": 0,
+        "api_max_concurrency": 2,
         "favor_change_probability": 10,
         "favor_increase_min": 0.05,
         "favor_increase_max": 0.30,
@@ -267,6 +290,9 @@ _cfg = config_manager.register_plugin(
         "favor_affect_reply": True,
         "personality_file": "plugins/miku_ai/personality.txt",
         "personality_reload": False,
+        "web_search_enabled": True,
+        "web_search_max_results": 5,
+        "web_search_timeout": 8,
         "special_users": [
             {
                 "qq": ["761695424"],
@@ -325,11 +351,13 @@ _cfg = config_manager.register_plugin(
         "expression_learn_after_messages": 100,
         "expression_sample_size": 3,
         "memory_enabled": True,
-        "memory_group_history_limit": 800,
-        "memory_user_history_limit": 100,
-        "topic_enabled": True,
-        "topic_window_hours": 5,
-        "topic_history_window_count": 3,
+        "passive_record_enabled": True,
+        "memory_db_path": "data/ai_memory.db",
+        "memory_ttl_days": 0,
+        "memory_max_per_namespace": 200,
+        "memory_recall_top_k": 4,
+        "memory_auto_extract": True,
+        "memory_extract_every": 10,
         # 敏感词与内容安全
         "sensitive_filter_enabled": True,
         "sensitive_words_extra": "",

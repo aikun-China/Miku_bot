@@ -19,6 +19,7 @@ from nonebot.rule import Rule
 from nonebot.typing import T_State
 from nonebot.log import logger
 from nonebot.exception import FinishedException
+from nonebot.params import CommandArg
 
 import sys
 import time
@@ -56,6 +57,7 @@ from .data_source import (
 )
 from .emoji_library import EmojiLibrary
 from .vision import clean_image_url
+from .memory_store import MemoryStore, build_namespaces
 
 
 _driver = get_driver()
@@ -109,6 +111,7 @@ async def _dequeue(session_id: str):
 @_driver.on_startup
 async def _on_startup():
     EmojiLibrary.init_db()
+    MemoryStore.init_db()
     if bool(get_config("emoji_auto_cleanup", True)):
         EmojiLibrary.cleanup_old()
     logger.info("[miku_ai] 插件已加载")
@@ -126,7 +129,7 @@ register_plugin_info(
     icon="🤖",
     order=3,
     description="AI聊天插件，支持云端/本地模型、识图、好感度系统",
-    commands=["清空聊天记录", "查询余额", "查询好感度"],
+    commands=["清空聊天记录", "查询余额", "查询好感度", "记住", "群记", "查记忆", "忘记"],
     usage="""AI聊天功能：
 
 【私聊】直接发消息即可对话
@@ -135,7 +138,11 @@ register_plugin_info(
 【命令】
   清空聊天记录 - 清空当前会话记录
   查询余额 - 查询AI API余额
-  查询好感度 - 查询当前好感度""",
+  查询好感度 - 查询当前好感度
+  记住 内容 - 让Miku记住一条关于你的信息
+  群记 内容 - 记录群公共信息（仅群管理员）
+  查记忆 [群] - 查看Miku记住的内容
+  忘记 关键词 - 让Miku忘掉相关记忆""",
 )
 
 
@@ -226,6 +233,50 @@ def _build_card_html(reply: str, favor_info: dict = None) -> str:
         show_favor=bool(get_config("show_favor_change", True)),
     )
     return html
+
+
+async def _should_record(event: MessageEvent, bot: Bot) -> bool:
+    try:
+        if not is_enabled():
+            return False
+        if not bool(get_config("passive_record_enabled", True)):
+            return False
+        # 不记录 bot 自己的消息
+        if str(event.user_id) == str(bot.self_id):
+            return False
+        return True
+    except Exception:
+        return False
+
+
+# 被动记录器：priority=9，先于 AI 回复 matcher(10) 执行，
+# 先落原始消息，AI 触发时由 process_chat 按 message_id upsert 成增强内容
+_record_matcher = on_message(rule=Rule(_should_record), priority=9, block=False)
+
+
+@_record_matcher.handle()
+async def _handle_record(bot: Bot, event: MessageEvent):
+    try:
+        text, image_urls, _, _ = _extract_text_and_images(event)
+        if not text and not image_urls:
+            return
+        user_id = str(event.user_id)
+        user_name = getattr(event.sender, "nickname", "") or user_id
+        group_id = str(event.group_id) if isinstance(event, GroupMessageEvent) else ""
+        hm = get_history_manager()
+        hm.append_message(
+            session_id=hm.get_session_id(user_id, group_id),
+            role="user",
+            content=text if text else "[图片]",
+            user_id=user_id,
+            user_name=user_name,
+            images=image_urls or None,
+            is_group=bool(group_id),
+            message_id=str(event.message_id),
+            timestamp=int(time.time()),
+        )
+    except Exception as e:
+        logger.warning(f"[miku_ai] 被动记录消息失败: {e}")
 
 
 _chat_matcher = on_message(rule=Rule(_is_talking_to_bot), priority=10, block=False)
@@ -338,6 +389,7 @@ async def _handle_chat_inner(bot: Bot, event: MessageEvent, state: T_State):
                 image_urls=image_urls,
                 group_id=group_id,
                 image_files=image_files,
+                message_id=str(event.message_id),
             )
         except Exception as e:
             import traceback
@@ -524,3 +576,131 @@ async def _handle_favor(event: MessageEvent):
     
     msg = f"好感度: {favor:.2f}/100\n等级: {level} {emoji}"
     await _favor_cmd.finish(msg)
+
+
+def _is_group_admin(bot: Bot, event: MessageEvent) -> bool:
+    if not isinstance(event, GroupMessageEvent):
+        return False
+    role = str(getattr(event.sender, "role", "") or "")
+    if role in ("admin", "owner"):
+        return True
+    try:
+        return str(event.user_id) in set(getattr(bot.config, "superusers", None) or ())
+    except Exception:
+        return False
+
+
+def _format_mem_time(ts: int) -> str:
+    try:
+        return time.strftime("%m-%d %H:%M", time.localtime(int(ts)))
+    except Exception:
+        return ""
+
+
+_remember_cmd = on_command("记住", priority=5, block=True)
+
+
+@_remember_cmd.handle()
+async def _handle_remember(event: MessageEvent, arg: Message = CommandArg()):
+    if not is_enabled():
+        await _remember_cmd.finish()
+        return
+    content = arg.extract_plain_text().strip()
+    if not content:
+        await _remember_cmd.finish("要记什么呢？这样告诉我：【记住 内容】")
+        return
+    user_id = str(event.user_id)
+    group_id = str(event.group_id) if isinstance(event, GroupMessageEvent) else ""
+    if MemoryStore.remember(build_namespaces(user_id, group_id)[0], content, source="manual"):
+        await _remember_cmd.finish(f"好啦，Miku把「{content[:60]}」记在小本本上了♪")
+    else:
+        await _remember_cmd.finish("呜...这条没记上，内容是不是空的呀？")
+
+
+_group_remember_cmd = on_command("群记", priority=5, block=True)
+
+
+@_group_remember_cmd.handle()
+async def _handle_group_remember(bot: Bot, event: MessageEvent, arg: Message = CommandArg()):
+    if not is_enabled():
+        await _group_remember_cmd.finish()
+        return
+    if not isinstance(event, GroupMessageEvent):
+        await _group_remember_cmd.finish("群公共记忆要在群聊里才能用哦～")
+        return
+    if not _is_group_admin(bot, event):
+        await _group_remember_cmd.finish("群公共记忆只有群管理员可以记录哦～")
+        return
+    content = arg.extract_plain_text().strip()
+    if not content:
+        await _group_remember_cmd.finish("要记什么呢？这样告诉我：【群记 内容】")
+        return
+    if MemoryStore.remember(f"group:{event.group_id}", content, source="manual"):
+        await _group_remember_cmd.finish(f"好啦，Miku把「{content[:60]}」记进群记忆了♪")
+    else:
+        await _group_remember_cmd.finish("呜...这条没记上，内容是不是空的呀？")
+
+
+_memory_list_cmd = on_command("查记忆", aliases={"记忆列表"}, priority=5, block=True)
+
+
+@_memory_list_cmd.handle()
+async def _handle_memory_list(event: MessageEvent, arg: Message = CommandArg()):
+    if not is_enabled():
+        await _memory_list_cmd.finish()
+        return
+    user_id = str(event.user_id)
+    group_id = str(event.group_id) if isinstance(event, GroupMessageEvent) else ""
+    if "群" in arg.extract_plain_text():
+        if not group_id:
+            await _memory_list_cmd.finish("群公共记忆要在群聊里才能查看哦～")
+            return
+        namespace = f"group:{group_id}"
+        title = "群公共记忆"
+    else:
+        namespace = build_namespaces(user_id, group_id)[0]
+        title = "关于你的记忆"
+    items = MemoryStore.list_memories(namespace, limit=10)
+    total = MemoryStore.count(namespace)
+    if not items:
+        await _memory_list_cmd.finish(f"Miku的小本本上还没有{title}哦～可以教我：【记住 内容】")
+        return
+    lines = [f"📖 {title}（共{total}条，显示最近{len(items)}条）"]
+    for i, m in enumerate(items, 1):
+        lines.append(f"{i}. {m['content']}（{_format_mem_time(m['updated_at'])}）")
+    await _memory_list_cmd.finish("\n".join(lines))
+
+
+_forget_cmd = on_command("忘记", priority=5, block=True)
+
+
+@_forget_cmd.handle()
+async def _handle_forget(bot: Bot, event: MessageEvent, arg: Message = CommandArg()):
+    if not is_enabled():
+        await _forget_cmd.finish()
+        return
+    keyword = arg.extract_plain_text().strip()
+    if not keyword:
+        await _forget_cmd.finish("要忘记什么呢？这样告诉我：【忘记 关键词】")
+        return
+    user_id = str(event.user_id)
+    group_id = str(event.group_id) if isinstance(event, GroupMessageEvent) else ""
+    if keyword.startswith("群"):
+        if not group_id:
+            await _forget_cmd.finish("群公共记忆要在群聊里才能删除哦～")
+            return
+        if not _is_group_admin(bot, event):
+            await _forget_cmd.finish("群公共记忆只有群管理员可以删除哦～")
+            return
+        kw = keyword[1:].strip()
+        if not kw:
+            await _forget_cmd.finish("要忘记什么呢？这样告诉我：【忘记 群 关键词】")
+            return
+        n = MemoryStore.forget(f"group:{group_id}", kw)
+        await _forget_cmd.finish(f"好啦，从群公共记忆里忘掉了{n}条相关内容♪")
+        return
+    n = MemoryStore.forget(build_namespaces(user_id, group_id)[0], keyword)
+    if n > 0:
+        await _forget_cmd.finish(f"好啦，Miku忘掉了{n}条相关记忆♪")
+    else:
+        await _forget_cmd.finish("嗯...小本本上没找到相关的记忆哦")
