@@ -2,6 +2,10 @@
 
 基于 **NoneBot2** 框架的 QQ 群机器人。
 
+[![许可证：AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
+
+本项目采用 **GNU Affero 通用公共许可证第 3 版（AGPL-3.0）** 发布。使用、修改或分发本项目时，请遵守 [AGPL-3.0 许可证条款](LICENSE)。
+
 ## 功能特性
 
 - **截图引擎**：使用系统 **Edge** 浏览器渲染 HTML 模板生成图片（Playwright `channel="msedge"`），无需下载 Chromium
@@ -323,3 +327,7 @@ Bot 自动下载最新代码并重启：
 ## 贡献
 
 欢迎通过 GitHub Issues 反馈问题，或提交 Pull Request。
+
+## 许可证
+
+本项目根据 [GNU Affero 通用公共许可证第 3 版（AGPL-3.0）](LICENSE) 授权。
