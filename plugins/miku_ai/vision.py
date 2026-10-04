@@ -12,7 +12,8 @@ from typing import Optional, Dict, List
 from nonebot.log import logger
 import httpx
 
-from .config import get_config, PROJECT_ROOT
+from .config import (get_config, PROJECT_ROOT, get_ai_platforms, mark_platform_failed,
+                     mark_platform_ok, get_platform_failover_cooldown, PLATFORM_COOLDOWN_DEFAULT)
 from .emoji_library import EmojiLibrary
 from .exception import ImageRecognitionException
 
@@ -370,19 +371,14 @@ def _parse_vision_json(content: str) -> Optional[Dict]:
 
 
 async def recognize_emoji(image_url: str) -> Optional[Dict]:
-    api_key = get_config("cloud_api_key", "") or ""
-    base_url = (get_config("cloud_base_url", "") or "").rstrip("/")
-    model = get_config("cloud_model", "") or ""
-    is_local = "localhost" in base_url or "127.0.0.1" in base_url
-    
-    logger.info(f"[miku_ai] 调用识图API: model={model}, url={image_url[:80] if image_url else ''}")
-    
-    if not model:
-        logger.warning("[miku_ai] 识图模型未配置")
+    platforms = get_ai_platforms()
+    if not platforms:
+        logger.warning("[miku_ai] 识图平台未配置")
         return None
-    if not api_key and not is_local:
-        logger.warning("[miku_ai] 识图 API Key 未配置且非本地模式")
-        return None
+    
+    logger.info(f"[miku_ai] 调用识图API: url={image_url[:80] if image_url else ''}")
+    
+
     
     img_content = await _download_image_bytes(image_url)
     if img_content:
@@ -401,10 +397,29 @@ async def recognize_emoji(image_url: str) -> Optional[Dict]:
         "\"tags\":[\"标签1\",\"标签2\"]}"
     )
     
-    url = base_url + "/chat/completions"
+    for platform in platforms:
+        result = await _recognize_with_platform(platform, image_data_uri, prompt)
+        if result is not None:
+            return result
+    return None
+
+
+async def _recognize_with_platform(platform: Dict[str, str], image_data_uri: str,
+                                   prompt: str) -> Optional[Dict]:
+    """单平台识图：平台级故障（429/402/401/403/5xx/连接失败）冷却该平台后由外层切换"""
+    name = platform["name"]
+    model = platform["model"]
+    is_local = "localhost" in platform["base_url"] or "127.0.0.1" in platform["base_url"]
+    if not platform["api_key"] and not is_local:
+        logger.debug(f"[miku_ai] 平台 {name} 无 API Key 且非本地，跳过识图")
+        return None
+
+    logger.info(f"[miku_ai] 调用识图API: 平台={name} 模型={model}")
+
+    url = platform["base_url"] + "/chat/completions"
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {platform['api_key']}",
     }
     
     try:
@@ -420,26 +435,45 @@ async def recognize_emoji(image_url: str) -> Optional[Dict]:
                 }
             ],
             "temperature": 0.3,
-            "max_tokens": 300,
+            "max_tokens": 1500,
         }
         async with httpx.AsyncClient(timeout=30.0) as client:
             r = await client.post(url, headers=headers, json=body)
             if r.status_code != 200:
-                logger.warning(f"[miku_ai] 识图模型失败 HTTP {r.status_code}: {r.text[:200]}")
+                logger.warning(f"[miku_ai] 识图模型失败 HTTP {r.status_code} (平台 {name}): {r.text[:200]}")
+                cooldown = get_platform_failover_cooldown(r.status_code, r.text)
+                if cooldown > 0:
+                    mark_platform_failed(name, cooldown)
                 return None
             data = r.json()
             choices = data.get("choices", [])
             if not choices:
                 return None
             content = _extract_content(choices[0])
+            if not content:
+                finish_reason = choices[0].get("finish_reason", "") if isinstance(choices[0], dict) else ""
+                if finish_reason == "length":
+                    logger.warning("[miku_ai] 识图 finish_reason=length 且 content 为空（推理耗尽 token），增大 max_tokens 重试")
+                    body["max_tokens"] = 4500
+                    r2 = await client.post(url, headers=headers, json=body)
+                    if r2.status_code == 200:
+                        data2 = r2.json()
+                        choices2 = data2.get("choices", []) if isinstance(data2, dict) else []
+                        if choices2:
+                            content = _extract_content(choices2[0])
             parsed = _parse_vision_json(content)
             if parsed:
                 logger.info(f"[miku_ai] 表情包识别成功: {parsed.get('description','')[:60]}")
+                mark_platform_ok(name)
                 return parsed
             else:
                 logger.debug(f"[miku_ai] 识图返回解析失败: {content[:200]}")
+    except httpx.HTTPError as e:
+        # 连接失败（平台宕机/网络不通）属平台级故障，冷却后由外层切换平台
+        mark_platform_failed(name, PLATFORM_COOLDOWN_DEFAULT)
+        logger.warning(f"[miku_ai] 识图模型异常 (平台 {name}): {e}")
     except Exception as e:
-        logger.warning(f"[miku_ai] 识图模型异常: {e}")
+        logger.warning(f"[miku_ai] 识图模型异常 (平台 {name}): {e}")
     return None
 
 

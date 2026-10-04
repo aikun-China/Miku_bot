@@ -2,8 +2,10 @@
 Miku AI 插件配置模块
 """
 
+import time
+
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from utils.config_manager import config_manager
 
@@ -42,8 +44,21 @@ _AI_TEMPLATE = (
     "  cloud_model: glm-4.6v\n"
     "  # 纯文本模型名（不用深度思考，响应更快更短）\n"
     "  cloud_text_model: glm-4.5-air\n"
-    "  # 文本模型最大输出 token（比多模态模型小很多）\n"
-    "  text_max_tokens: 2048\n"
+    "  # 文本模型最大输出 token（推理模型需给 reasoning_content 留余量）\n"
+    "  text_max_tokens: 8192\n"
+    "\n"
+    "  # ── 多平台故障转移 ──\n"
+    "  # 平台列表：按顺序尝试，当前平台不可用（限流/余额不足/鉴权失败/宕机）时自动切换下一个\n"
+    "  # 配置后上方 cloud_*/local_* 单平台配置将被忽略；留空时用单平台配置并自动以本地兜底\n"
+    "  ai_platforms: []\n"
+    "  # 平台字段：name(标识，可自定义) / api_key / base_url / model(识图/多模态) / text_model(纯文本，留空用 model)\n"
+    "  # 示例：\n"
+    "  # ai_platforms:\n"
+    "  #   - name: 端砚\n"
+    "  #     api_key: 'sk-xxx'\n"
+    "  #     base_url: https://discovery-api.intern-ai.org.cn/v1\n"
+    "  #     model: kimi-k2.6\n"
+    "  #     text_model: ''\n"
     "\n"
     "  # ── 本地 AI 配置（Ollama / LM Studio 等 OpenAI 兼容服务） ──\n"
     "  # 本地 API Base URL（例如 Ollama 默认 http://localhost:11434/v1）\n"
@@ -138,8 +153,8 @@ _AI_TEMPLATE = (
     "  # ── 高级参数 ──\n"
     "  # 采样温度（0-2，值越高越发散，默认 1.0）\n"
     "  temperature: 1.0\n"
-    "  # 单次回复最大 token 数（留空=不限）\n"
-    "  max_tokens: 800\n"
+    "  # 单次回复最大 token 数（留空=不限；推理模型建议 8192）\n"
+    "  max_tokens: 8192\n"
     "  # 请求超时时间（秒）\n"
     "  request_timeout: 30\n"
     "  # 是否启用识图功能（需要模型支持 vision）\n"
@@ -263,7 +278,8 @@ _cfg = config_manager.register_plugin(
         "cloud_base_url": "https://open.bigmodel.cn/api/paas/v4",
         "cloud_model": "glm-4.6v",
         "cloud_text_model": "glm-4.5-air",
-        "text_max_tokens": 2048,
+        "text_max_tokens": 8192,
+        "ai_platforms": [],
         "local_base_url": "http://localhost:11434/v1",
         "local_model": "qwen2.5:7b",
         "local_api_key": "",
@@ -304,7 +320,7 @@ _cfg = config_manager.register_plugin(
             }
         ],
         "temperature": 1.0,
-        "max_tokens": 800,
+        "max_tokens": 8192,
         "request_timeout": 30,
         "vision_enabled": True,
         "card_width": 600,
@@ -389,3 +405,107 @@ def is_enabled() -> bool:
     """检查插件是否启用"""
     raw = get_config("enabled", True)
     return str(raw).strip().lower() not in ("false", "0", "no", "")
+
+
+# ── 多平台故障转移 ──
+# 平台失败后的冷却记录（到期时间戳）：冷却期内该平台排到尝试顺序末尾，
+# 避免主平台故障时每条消息都先撞一次注定失败的请求
+_platform_cooldown: Dict[str, float] = {}
+# 冷却时长：限流恢复快（60s），余额不足/鉴权失败/宕机恢复慢（300s）
+PLATFORM_COOLDOWN_RATE_LIMIT = 60.0
+PLATFORM_COOLDOWN_DEFAULT = 300.0
+
+# 余额不足关键词（大小写不敏感匹配，覆盖常见网关返回；部分网关用 429 返回 insufficient_quota）
+_BALANCE_KEYWORDS = (
+    "insufficient balance", "insufficient_quota", "insufficient quota",
+    "余额不足", "欠费", "账户余额", "balance is insufficient", "arrears",
+)
+# 鉴权失败关键词
+_AUTH_KEYWORDS = (
+    "invalid api key", "invalid_api_key", "unauthorized", "authentication",
+    "api key not valid", "令牌无效", "鉴权失败", "无权限",
+)
+
+
+def get_ai_platforms() -> List[Dict[str, str]]:
+    """读取 AI 平台列表（多平台故障转移用）。
+    优先使用 ai_platforms 列表配置；未配置时用旧版 cloud_*/local_* 平铺键合成（向后兼容）。
+    返回前按冷却状态排序：可用平台在前（保持配置顺序），冷却中的垫底；
+    全部处于冷却时仍全部返回（兜底总得试试）。"""
+    raw = get_config("ai_platforms", None)
+    platforms: List[Dict[str, str]] = []
+    if isinstance(raw, list):
+        for p in raw:
+            if not isinstance(p, dict):
+                continue
+            base_url = str(p.get("base_url", "") or "").strip().rstrip("/")
+            model = str(p.get("model", "") or "").strip()
+            if not base_url or not model:
+                continue
+            platforms.append({
+                "name": str(p.get("name", "") or "").strip() or base_url,
+                "api_key": str(p.get("api_key", "") or ""),
+                "base_url": base_url,
+                "model": model,
+                "text_model": str(p.get("text_model", "") or "").strip(),
+            })
+    if not platforms:
+        # 向后兼容：旧版单平台配置 → 云端在前、本地兜底
+        api_mode = str(get_config("api_mode", "cloud") or "cloud").lower()
+        if api_mode == "cloud":
+            cloud_key = str(get_config("cloud_api_key", "") or "")
+            cloud_url = str(get_config("cloud_base_url", "") or "").rstrip("/")
+            cloud_model = str(get_config("cloud_model", "") or "")
+            if cloud_key and cloud_url and cloud_model:
+                platforms.append({
+                    "name": "云端",
+                    "api_key": cloud_key,
+                    "base_url": cloud_url,
+                    "model": cloud_model,
+                    "text_model": str(get_config("cloud_text_model", "") or "").strip(),
+                })
+        local_url = str(get_config("local_base_url", "") or "").rstrip("/")
+        local_model = str(get_config("local_model", "") or "")
+        if local_url and local_model:
+            platforms.append({
+                "name": "本地",
+                "api_key": str(get_config("local_api_key", "") or ""),
+                "base_url": local_url,
+                "model": local_model,
+                "text_model": "",
+            })
+    if not platforms:
+        return []
+    now = time.time()
+    ready = [p for p in platforms if _platform_cooldown.get(p["name"], 0.0) <= now]
+    cooling = [p for p in platforms if _platform_cooldown.get(p["name"], 0.0) > now]
+    return ready + cooling if ready else cooling
+
+
+def mark_platform_failed(name: str, cooldown_seconds: float = PLATFORM_COOLDOWN_DEFAULT) -> None:
+    """标记平台故障，cooldown_seconds 秒内降低其尝试优先级"""
+    _platform_cooldown[name] = time.time() + max(1.0, cooldown_seconds)
+
+
+def mark_platform_ok(name: str) -> None:
+    """平台请求成功，清除冷却状态"""
+    _platform_cooldown.pop(name, None)
+
+
+def get_platform_failover_cooldown(status_code: int, body_text: str) -> float:
+    """判断 HTTP 错误是否为平台级故障（应切换平台）。
+    返回 0.0 = 请求级错误（换平台也无法解决，不切换）；>0 = 故障转移并冷却的秒数。"""
+    lower = (body_text or "").lower()
+    # 余额不足/欠费 → 切平台（冷却久，短期内不会恢复）
+    if status_code == 402 or any(kw in lower for kw in _BALANCE_KEYWORDS):
+        return PLATFORM_COOLDOWN_DEFAULT
+    # 鉴权失败：Key 无效/未授权/无权限
+    if status_code in (401, 403) or any(kw in lower for kw in _AUTH_KEYWORDS):
+        return PLATFORM_COOLDOWN_DEFAULT
+    # 限流：内置重试（2s→4s×2）耗尽后仍 429 → 切平台（冷却短，限流恢复快）
+    if status_code == 429:
+        return PLATFORM_COOLDOWN_RATE_LIMIT
+    # 服务端故障
+    if status_code >= 500:
+        return PLATFORM_COOLDOWN_DEFAULT
+    return 0.0

@@ -73,6 +73,26 @@ _PIXIV_CLIENT_ID = "MOBrBDS8blbauoSck0ZfDbtuzpyT"
 _PIXIV_CLIENT_SECRET = "lsACyCD94FhDUtGTt3rICgW1RhEwlw7pmJPZt2Y"
 _PIXIV_OAUTH = "https://oauth.secure.pixiv.net/auth/token"
 
+# 中文角色名 → Lolicon（pixiv 系）日文标签映射表。
+# Lolicon 标签库为日文/英文，中文译名直接搜索零匹配（2026-10-04 实测：
+# tag=安和昴 零结果，tag=安和すばる 正常）。命中键时把日文标签以「|」（或）
+# 合并进同一 tag 参数。搜不到的角色名往这张表里加即可（键=用户输入词，值=pixiv 标签）
+_TAG_ALIAS = {
+    "安和昴": "安和すばる",  # Girls Band Cry
+    "卢帕": "ルパ",  # Girls Band Cry
+    "少女乐队的呐喊": "ガールズバンドクライ",  # 作品名中文译名
+    "初音未来": "初音ミク",
+    "镜音铃": "鏡音リン",
+    "镜音连": "鏡音レン",
+    "巡音流歌": "巡音ルカ",
+    "巡音流子": "巡音ルカ",
+    "弱音白": "弱音ハク",
+    "芙宁娜": "フリーナ",  # 原神
+    "雷电将军": "雷電将軍",  # 原神
+    "神里绫华": "神里綾華",  # 原神
+    "三月七": "三月なのか",  # 崩坏：星穹铁道
+}
+
 
 def _get_cfg(key: str, default=None):
     if config_manager is None:
@@ -202,23 +222,43 @@ def _filter_lolicon_items(items: List[dict], wanted: List[str]) -> List[dict]:
 async def _search_lolicon(word: str) -> List[dict]:
     """通过 Lolicon API 获取涩图（source=lolicon 时使用）。
 
-    - 多关键词按空格拆分，tag 间为 OR 关系；多词时同时携带完整短语标签
+    - 多关键词按空格拆分为多个 tag 参数（API 语义为「与」，2026-10-04 实测确认）
+    - r18 配置值经映射后传给 API（配置语义≠API 语义，见下方注释）
+    - 中文角色名经 _TAG_ALIAS 补充日文标签（同一 tag 参数内以「|」或合并）
     - API 响应波动大（实测 1s~20s+，偶发超时），失败自动重试一次
     - 结果经 _filter_lolicon_items 客户端复核
     """
     words = word.split()[:5]
+    try:
+        r18_cfg = int(_get_cfg("r18", 1))
+    except (TypeError, ValueError):
+        r18_cfg = 1
+    # r18 配置语义：0=仅正常图 1=开启 R18 权限（正常+R18 混合） 2=仅 R18
+    # Lolicon API 语义：0=非R18 1=仅R18 2=混合 —— 旧版直接透传配置值，
+    # 配 1 时 API 只返回 R18（「开了 r18 就只发 R18」的根因），必须做映射
+    api_r18 = {0: 0, 1: 2, 2: 1}.get(r18_cfg, 2)
     params: List[tuple] = [
-        ("r18", str(_get_cfg("r18", 1))),
+        ("r18", str(api_r18)),
         ("num", str(_get_cfg("num", 3))),
     ]
     wanted: List[str] = []
     if words:
-        tag_candidates = [" ".join(words)] + words if len(words) > 1 else list(words)
-        for t in tag_candidates:
-            key = t.strip().lower()
-            if key and key not in wanted:
-                wanted.append(key)
-                params.append(("tag", t.strip()))
+        # 整句去空格后命中别名表时按整句处理，如「安和 昴」→「安和昴」
+        phrase = "".join(words)
+        if _TAG_ALIAS.get(phrase):
+            words = [phrase]
+        for t in words:
+            t = t.strip()
+            key = t.lower()
+            if not key or key in wanted:
+                continue
+            # 多 tag 参数之间是「与」关系（实测 tag=安和昴&tag=安和すばる → 零结果），
+            # 别名不能拆成第二个 tag 参数，必须用「|」或语法合并进同一个参数
+            alias = _TAG_ALIAS.get(t) or _TAG_ALIAS.get(key)
+            params.append(("tag", f"{t}|{alias}" if alias else t))
+            wanted.append(key)
+            if alias and alias.lower() not in wanted:
+                wanted.append(alias.lower())
     for attempt in (1, 2):
         try:
             async with httpx.AsyncClient(timeout=30) as client:

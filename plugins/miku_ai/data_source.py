@@ -14,7 +14,8 @@ from typing import Dict, List, Optional, Tuple
 from nonebot.log import logger
 import httpx
 
-from .config import get_config, PROJECT_ROOT
+from .config import (get_config, PROJECT_ROOT, get_ai_platforms, mark_platform_failed,
+                     mark_platform_ok, get_platform_failover_cooldown, PLATFORM_COOLDOWN_DEFAULT)
 from .memory_backend import ChatHistoryManager
 from .memory_store import MemoryStore, build_namespaces
 from .exception import AIResultException
@@ -335,10 +336,6 @@ async def _web_search(query: str) -> str:
 
 async def _ai_search_decision(history: List[Dict], user_text: str) -> Tuple[Optional[bool], str]:
     """AI 自主判断是否需要联网搜索；返回 (need_search, query)，判断失败返回 (None, "")"""
-    api_mode = str(get_config("api_mode", "cloud") or "cloud").lower()
-    router_model = ""
-    if api_mode == "cloud":
-        router_model = get_config("cloud_text_model", "") or get_config("cloud_model", "") or ""
     lines = []
     for m in history[-6:]:
         content = m.get("content", "")
@@ -361,7 +358,7 @@ async def _ai_search_decision(history: List[Dict], user_text: str) -> Tuple[Opti
         resp = await _call_ai_api(
             [{"role": "user", "content": prompt}],
             temperature=0.0, max_tokens=120, request_timeout=15,
-            model=router_model, thinking=False,
+            thinking=False,
         )
         resp = _strip_think_blocks(resp)
         m = re.search(r"\{[\s\S]*?\}", resp)
@@ -402,44 +399,69 @@ async def _post_with_retry(client: httpx.AsyncClient, url: str,
 async def _call_ai_api(messages: List[Dict], temperature: float = 1.0,
                        max_tokens: int = 0, request_timeout: int = 0,
                        model: str = "", thinking: bool = True) -> str:
-    api_mode = str(get_config("api_mode", "cloud") or "cloud").lower()
-    api_key = ""
-    base_url = ""
-
-    if api_mode == "cloud":
-        api_key = get_config("cloud_api_key", "") or ""
-        base_url = (get_config("cloud_base_url", "") or "").rstrip("/")
-        if not model:
-            model = get_config("cloud_model", "") or ""
-        if not api_key:
-            api_mode = "local"
-            logger.info("[miku_ai] 云端API Key为空，自动切换到本地模式")
-
-    if api_mode == "local":
-        api_key = get_config("local_api_key", "") or ""
-        base_url = (get_config("local_base_url", "") or "").rstrip("/")
-        if not model:
-            model = get_config("local_model", "") or ""
-
-    if not base_url or not model:
+    """带多平台故障转移的 AI 调用：按顺序尝试 ai_platforms 平台列表，
+    当前平台限流/余额不足/鉴权失败/宕机时自动切换下一个平台"""
+    platforms = get_ai_platforms()
+    if not platforms:
         raise AIResultException("AI配置不完整，请检查配置")
 
-    # 模型兼容性预处理：根据 VISION_MODELS 配置表判断模型类型
+    has_image = any(
+        isinstance(m.get("content"), list) and any(
+            isinstance(p, dict) and p.get("type") == "image_url" for p in m["content"]
+        )
+        for m in messages
+    )
+
+    last_exc: Optional[AIResultException] = None
+    for platform in platforms:
+        try:
+            content = await _call_ai_api_once(
+                platform, messages, has_image,
+                temperature=temperature, max_tokens=max_tokens,
+                request_timeout=request_timeout, model=model, thinking=thinking,
+            )
+            mark_platform_ok(platform["name"])
+            return content
+        except AIResultException as e:
+            cooldown = getattr(e, "failover_cooldown", 0.0)
+            if cooldown <= 0:
+                raise
+            mark_platform_failed(platform["name"], cooldown)
+            logger.warning(f"[miku_ai] 平台 {platform['name']} 不可用（冷却{cooldown:.0f}s），切换下一个平台")
+            last_exc = e
+    raise last_exc or AIResultException("AI 请求失败")
+
+
+async def _call_ai_api_once(platform: Dict[str, str], raw_messages: List[Dict],
+                            has_image: bool, temperature: float = 1.0,
+                            max_tokens: int = 0, request_timeout: int = 0,
+                            model: str = "", thinking: bool = True) -> str:
+    """单平台 AI 调用：平台级故障（429/402/401/403/5xx/连接失败）抛出带
+    failover_cooldown 属性的异常由外层切换平台；请求级错误（400等）直接抛出"""
+    name = platform["name"]
+
+    # 模型选择：显式指定优先；否则识图用多模态模型，纯文本优先 text_model（更快更便宜）
+    if not model:
+        model = platform["model"] if has_image else (platform["text_model"] or platform["model"])
+
+    if not model:
+        raise AIResultException(f"平台 {name} 模型未配置")
+
+    # 模型兼容性预处理：根据 VISION_MODELS 配置表判断模型类型（逐平台独立判断）
     supports_vision = _is_vision_model(model)
     is_text_model = not supports_vision
 
-    normalized_messages = []
-    for m in messages:
-        normalized_messages.append({
+    messages = []
+    for m in raw_messages:
+        messages.append({
             "role": m.get("role", "user"),
             "content": _normalize_content(m.get("content", ""), is_text_model),
         })
-    messages = normalized_messages
 
-    url = base_url + "/chat/completions"
+    url = platform["base_url"] + "/chat/completions"
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {platform['api_key']}",
     }
 
     # 模型兼容性处理：glm-4.5-air 等模型可能不支持 thinking 参数
@@ -486,7 +508,7 @@ async def _call_ai_api(messages: List[Dict], temperature: float = 1.0,
                         r = await client.post(url, headers=headers, json=body)
 
             if r.status_code != 200:
-                logger.warning(f"[miku_ai] AI API 失败 HTTP {r.status_code}: {r.text[:500]}")
+                logger.warning(f"[miku_ai] AI API 失败 HTTP {r.status_code} (平台 {name}): {r.text[:500]}")
                 # 400 错误：区分真正的长度超限还是其他参数错误
                 if r.status_code == 400:
                     real_err = r.text.lower()
@@ -496,10 +518,15 @@ async def _call_ai_api(messages: List[Dict], temperature: float = 1.0,
                         raise AIResultException("Miku脑子有点累了，这条消息装不下啦～能说短一点吗？")
                     else:
                         raise AIResultException("呜...Miku脑子卡住了...等一下再试试吧～")
-                elif r.status_code == 429:
-                    raise AIResultException("Miku现在说话太多啦，嗓子有点疼，等一下再聊吧～")
+                # 429/402/401/403/5xx 属平台级故障：附冷却时间由外层切换平台
+                cooldown = get_platform_failover_cooldown(r.status_code, r.text)
+                if r.status_code == 429:
+                    err = AIResultException("Miku现在说话太多啦，嗓子有点疼，等一下再聊吧～")
                 else:
-                    raise AIResultException(f"呜...Miku脑子卡住了...({r.status_code})")
+                    err = AIResultException(f"呜...Miku脑子卡住了...({r.status_code})")
+                if cooldown > 0:
+                    err.failover_cooldown = cooldown
+                raise err
             data = r.json()
             logger.debug(f"[miku_ai] AI API 响应结构: keys={list(data.keys()) if isinstance(data, dict) else type(data).__name__}")
             choices = data.get("choices", []) if isinstance(data, dict) else []
@@ -514,7 +541,7 @@ async def _call_ai_api(messages: List[Dict], temperature: float = 1.0,
                 finish_reason = choices[0].get("finish_reason", "") if isinstance(choices[0], dict) else ""
                 if finish_reason == "length" and max_tokens and max_tokens > 0:
                     logger.warning(f"[miku_ai] finish_reason=length, content 为空，增大 max_tokens 重试")
-                    body["max_tokens"] = max_tokens * 3
+                    body["max_tokens"] = min(max_tokens * 3, 32000)
                     r2 = await client.post(url, headers=headers, json=body)
                     if r2.status_code == 200:
                         data2 = r2.json()
@@ -527,6 +554,11 @@ async def _call_ai_api(messages: List[Dict], temperature: float = 1.0,
             return content
     except httpx.TimeoutException:
         raise AIResultException("AI 请求超时")
+    except httpx.HTTPError as e:
+        # 连接失败（平台宕机/网络不通）属平台级故障，冷却后由外层切换平台
+        err = AIResultException(f"AI 请求失败: {type(e).__name__}")
+        err.failover_cooldown = PLATFORM_COOLDOWN_DEFAULT
+        raise err
     except Exception as e:
         if isinstance(e, AIResultException):
             raise
@@ -811,17 +843,19 @@ async def process_chat(user_id: str, user_name: str, text: str,
             logger.info(f"[miku_ai] planner决定等待: {plan.reason}")
             return "", {"planner_wait": True, "reason": plan.reason}
 
-    # 构建系统提示词
+    # 构建系统提示词（前缀稳定原则：system_prompt 保持字节级不变以命中端砚
+    # 服务端前缀缓存；敏感词等随消息变化的提示后置到 dynamic_context 末尾）
     system_prompt = build_system_prompt(user_id, user_name, is_group)
 
-    # ── 将敏感词检测结果注入系统提示词，让AI根据情况灵活回应 ──
+    # ── 敏感词检测结果：不并入 system_prompt（会破坏前缀缓存），暂存后注入 dynamic_context ──
+    sensitive_hint = ""
     if sensitive_level:
         if sensitive_level == "mild":
-            system_prompt += "\n\n【系统提示】刚刚用户的消息包含轻微调侃/越界内容。请以傲娇或撒娇的方式回应，不要真的生气，用可爱的方式怼回去或转移话题即可。"
+            sensitive_hint = "【系统提示】刚刚用户的消息包含轻微调侃/越界内容。请以傲娇或撒娇的方式回应，不要真的生气，用可爱的方式怼回去或转移话题即可。"
         elif sensitive_level == "moderate":
-            system_prompt += "\n\n【系统提示】刚刚用户的消息包含侮辱/贬低内容。请以冷淡但不失礼貌的方式拒绝，表达你的不满或不屑，可以明确表示不喜欢这种话。"
+            sensitive_hint = "【系统提示】刚刚用户的消息包含侮辱/贬低内容。请以冷淡但不失礼貌的方式拒绝，表达你的不满或不屑，可以明确表示不喜欢这种话。"
         elif sensitive_level == "severe":
-            system_prompt += "\n\n【系统提示】刚刚用户的消息包含严重违规内容（性骚扰/露骨表达）。请以非常冷淡或干脆的方式拒绝，不要给任何余地，直接表达反感或假装没听到。"
+            sensitive_hint = "【系统提示】刚刚用户的消息包含严重违规内容（性骚扰/露骨表达）。请以非常冷淡或干脆的方式拒绝，不要给任何余地，直接表达反感或假装没听到。"
 
     # 构建动态用户上下文（leekchat风格）
     dynamic_context = _build_dynamic_user_context(
@@ -865,6 +899,10 @@ async def process_chat(user_id: str, user_name: str, text: str,
             search_block = await _web_search(search_query)
             if search_block:
                 dynamic_context = f"{dynamic_context}\n\n{search_block}" if dynamic_context else search_block
+
+    # ── 敏感词提示注入 dynamic_context 末尾（位于消息数组尾部，不影响 system 前缀缓存） ──
+    if sensitive_hint:
+        dynamic_context = f"{dynamic_context}\n\n{sensitive_hint}" if dynamic_context else sensitive_hint
 
     # 构建上下文消息
     context_messages = get_history_manager().get_context_messages(
@@ -942,13 +980,8 @@ async def process_chat(user_id: str, user_name: str, text: str,
     temperature = float(get_config("temperature", 1.0) or 1.0)
     max_tokens = int(get_config("max_tokens", 0) or 0)
 
-    # 纯文字用 cloud_text_model（更快更便宜），图片用 cloud_model（支持 vision）
-    api_model = ""
-    if processed_image_urls:
-        api_model = get_config("cloud_model", "") or ""
-    else:
-        api_model = get_config("cloud_text_model", "") or get_config("cloud_model", "") or ""
-        # 文本模型启用思考模式，需要足够token
+    # 纯文本启用思考模式，需要足够 token（模型选择由多平台故障转移按内容自动决定）
+    if not processed_image_urls:
         text_max = int(get_config("text_max_tokens", 0) or 0)
         if text_max:
             max_tokens = text_max
@@ -957,7 +990,6 @@ async def process_chat(user_id: str, user_name: str, text: str,
         context_messages,
         temperature=temperature,
         max_tokens=max_tokens,
-        model=api_model,
     )
 
     # 去除思考块

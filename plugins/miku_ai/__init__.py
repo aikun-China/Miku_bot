@@ -50,7 +50,7 @@ try:
     from utils.balance_check import get_cached_balance
 except ImportError:
     get_cached_balance = None
-from .config import get_config, is_enabled, BASE_DIR, TEMPLATES_DIR, BALANCE_CACHE_DIR
+from .config import get_config, is_enabled, BASE_DIR, TEMPLATES_DIR, BALANCE_CACHE_DIR, get_ai_platforms
 from .data_source import (
     process_chat, split_reply_segments, save_history_async,
     get_history_manager, build_system_prompt,
@@ -507,10 +507,16 @@ async def _handle_balance(bot: Bot, event: MessageEvent):
         await _balance_cmd.finish("余额查询功能未启用，请检查依赖安装")
         return
     
-    api_key = str(get_config("cloud_api_key", "") or "")
-    base_url = str(get_config("cloud_base_url", "") or "").rstrip("/")
-    model = str(get_config("cloud_model", "") or "")
-    
+    platforms = get_ai_platforms()
+    if not platforms:
+        await _balance_cmd.finish("AI 平台未配置，没有余额可查哦~")
+        return
+
+    platform = platforms[0]
+    api_key = platform["api_key"]
+    base_url = platform["base_url"].rstrip("/")
+    model = platform["model"]
+
     if not api_key or "localhost" in base_url or "127.0.0.1" in base_url:
         await _balance_cmd.finish("当前使用本地模式，没有余额查询哦~")
         return
