@@ -85,12 +85,11 @@ class ConfigManager:
                     logger.warning("[Config] YAML 根节点不是 dict，已重置为 {}")
                     data = {}
                 self._config = data
-                # 调试：打印已读取的顶层 key
+                # 记录配置结构，不输出配置值或密钥。
                 ai_val = data.get("miku_ai", {})
                 logger.info(
                     f"[Config] 读取 YAML 成功: 顶层 keys={list(data.keys())}, "
-                    f"miku_ai.keys={list(ai_val.keys()) if isinstance(ai_val, dict) else 'NOT_DICT'}, "
-                    f"miku_ai.cloud_api_key={repr(ai_val.get('cloud_api_key', 'MISSING'))}"
+                    f"miku_ai.keys={list(ai_val.keys()) if isinstance(ai_val, dict) else 'NOT_DICT'}"
                 )
             except Exception as e:
                 logger.error(f"[Config] 读取 YAML 失败: {e}，已创建新配置")

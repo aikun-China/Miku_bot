@@ -101,14 +101,14 @@ body{font-family:"Noto Sans SC",sans-serif;background:linear-gradient(135deg, va
     <div class="page-header">
         <div>
             <h1 class="page-title">配置编辑</h1>
-            <p class="page-hint">直接修改 bot.yaml。保存时自动生成备份，可从"备份历史"恢复。</p>
+            <p class="page-hint">分别编辑 Bot 插件配置和全局 AI 模型连接配置，保存时自动生成备份。</p>
         </div>
         <div id="theme-container"></div>
     </div>
 
     <div class="card">
         <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
-            <span>bot.yaml</span>
+            <span id="config-title">bot.yaml</span>
             <div>
                 <span id="save-status" class="save-status"></span>
                 <button class="btn btn-sec btn-sm" onclick="loadConfig()">刷新</button>
@@ -116,15 +116,20 @@ body{font-family:"Noto Sans SC",sans-serif;background:linear-gradient(135deg, va
                 <button class="btn btn-sm" onclick="saveConfig()">保存配置</button>
             </div>
         </div>
+        <div style="display:flex;gap:8px;margin:0 0 12px;">
+            <button id="bot-config-tab" class="btn btn-sec btn-sm" onclick="switchConfig('bot')">bot.yaml</button>
+            <button id="ai-config-tab" class="btn btn-sec btn-sm" onclick="switchConfig('ai-models')">全局 AI 模型</button>
+        </div>
         <textarea id="yaml-editor" class="editor" spellcheck="false" placeholder="加载中..."></textarea>
     </div>
 
     <div class="card warning-card">
         <div class="card-title">注意事项</div>
         <ul>
-            <li>保存前会自动创建备份，支持从"备份历史"恢复</li>
+            <li>模型平台列表和本地模型连接参数统一保存在 config/ai_models.yaml</li>
+            <li>保存前会自动创建对应配置文件的备份，可从"备份历史"恢复</li>
             <li>YAML 格式要求严格，注意缩进结构（2 空格）</li>
-            <li>修改后 Bot 需要重启或让插件重新读取配置才会生效</li>
+            <li>全局 AI 模型配置保存后立即生效；bot.yaml 修改后会热更新</li>
         </ul>
     </div>
 </div>
@@ -139,14 +144,25 @@ body{font-family:"Noto Sans SC",sans-serif;background:linear-gradient(135deg, va
     </div>
 </div>
 
-<script src="/js/api.js"></script>
+<script src="/js/api.js?v=20261004-ai-model-config"></script>
 <script src="/js/app.js"></script>
 <script>
 let currentContent = "";
+let currentTarget = "bot";
+
+function switchConfig(target) {
+    if (target === currentTarget) return;
+    currentTarget = target;
+    document.getElementById("config-title").innerText =
+        target === "ai-models" ? "ai_models.yaml" : "bot.yaml";
+    document.getElementById("bot-config-tab").classList.toggle("btn-sec", target !== "bot");
+    document.getElementById("ai-config-tab").classList.toggle("btn-sec", target !== "ai-models");
+    loadConfig();
+}
 
 async function loadConfig() {
     try {
-        const data = await api.config.get();
+        const data = await api.config.get(currentTarget);
         currentContent = data.content;
         document.getElementById("yaml-editor").value = data.content;
         document.getElementById("yaml-editor").placeholder = "在此编辑 YAML 配置...";
@@ -163,7 +179,7 @@ async function saveConfig() {
         return;
     }
     try {
-        await api.config.update(content);
+        await api.config.update(content, currentTarget);
         currentContent = content;
         document.getElementById("save-status").innerText = "\u2714 已保存";
         Toast.success("配置已保存");
@@ -177,7 +193,7 @@ async function saveConfig() {
 
 async function showBackupModal() {
     try {
-        const data = await api.config.get();
+        const data = await api.config.get(currentTarget);
         const backups = data.backups || [];
         if (backups.length === 0) {
             document.getElementById("backup-list").innerHTML = '<p style="color:#a0a0c0;font-size:13px;text-align:center;padding:20px;">暂无备份</p>';
@@ -195,7 +211,7 @@ async function showBackupModal() {
 async function restoreBackup(timestamp) {
     if (!confirm("确定要恢复到该备份版本吗？当前配置会被自动备份。")) return;
     try {
-        await api.config.restoreBackup(timestamp);
+        await api.config.restoreBackup(timestamp, currentTarget);
         Toast.success("已恢复到备份版本");
         closeBackupModal();
         loadConfig();

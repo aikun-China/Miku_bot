@@ -181,39 +181,40 @@ def _count_users() -> int:
 
 
 async def _check_api_connectivity() -> dict:
-    """检查AI API连通性"""
-    result = {"text_api": False, "vision_api": False}
-    try:
-        import httpx
-        # 检查文本AI
-        base_url = str(config_manager.get("miku_ai", "cloud_base_url", "") or "")
-        api_key = str(config_manager.get("miku_ai", "cloud_api_key", "") or "")
-        if base_url and api_key:
-            url = base_url.rstrip("/") + "/chat/completions"
-            headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
-            body = {"model": str(config_manager.get("miku_ai", "cloud_model", "glm-4-flash") or "glm-4-flash"),
-                    "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1}
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                r = await client.post(url, headers=headers, json=body)
-                result["text_api"] = r.status_code == 200
+    """检查配置的 AI 平台连通性，成功任一平台即视为可用。"""
+    import httpx
+    from plugins.miku_ai.config import get_ai_platforms
 
-        # 检查识图AI（如果启用了独立配置）
-        vision_separate = config_manager.get("miku_ai", "vision_separate", False)
-        if vision_separate:
-            v_key = str(config_manager.get("miku_ai", "vision_cloud_api_key", "") or "")
-            if not v_key:
-                v_key = api_key
-            v_url = str(config_manager.get("miku_ai", "vision_cloud_base_url", "") or base_url)
-            v_model = str(config_manager.get("miku_ai", "vision_cloud_model", "") or "")
-            if v_url and v_key and v_model:
-                url = v_url.rstrip("/") + "/chat/completions"
-                headers = {"Content-Type": "application/json", "Authorization": f"Bearer {v_key}"}
-                body = {"model": v_model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1}
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    r = await client.post(url, headers=headers, json=body)
-                    result["vision_api"] = r.status_code == 200
-    except Exception as e:
-        logger.debug(f"[miku_basic] API连通性检查失败: {e}")
+    result = {"text_api": False}
+    for platform in get_ai_platforms():
+        model = platform["text_model"] or platform["model"]
+        if not model:
+            continue
+
+        headers = {"Content-Type": "application/json"}
+        if platform["api_key"]:
+            headers["Authorization"] = f"Bearer {platform['api_key']}"
+        body = {
+            "model": model,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 1,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{platform['base_url']}/chat/completions",
+                    headers=headers,
+                    json=body,
+                )
+            if response.status_code == 200:
+                result["text_api"] = True
+                break
+            logger.debug(
+                f"[miku_basic] AI平台 {platform['name']} 连通性检查失败: "
+                f"HTTP {response.status_code}"
+            )
+        except httpx.HTTPError as e:
+            logger.debug(f"[miku_basic] AI平台 {platform['name']} 连通性检查失败: {e}")
     return result
 
 
@@ -279,7 +280,7 @@ async def _handle_selfcheck(bot: Bot, event: MessageEvent):
     # API连通性
     api_status = await _check_api_connectivity()
     text_api_str = "✅ 正常" if api_status["text_api"] else "❌ 异常"
-    vision_api_str = "✅ 正常" if api_status["vision_api"] else "❌ 异常" if config_manager.get("miku_ai", "vision_separate", False) else "未启用"
+    vision_api_str = "随多平台模型配置" if config_manager.get("miku_ai", "vision_enabled", True) else "未启用"
 
     # 构建消息
     lines = [

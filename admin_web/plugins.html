@@ -160,6 +160,25 @@ body { font-family: "Noto Sans SC", sans-serif; background: linear-gradient(135d
     display: flex; gap: 12px; justify-content: flex-end;
     margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border-color);
 }
+.plugin-settings-modal {
+    padding: 10px;
+}
+.plugin-settings-content {
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    overflow: hidden;
+}
+.plugin-settings-form {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+.plugin-settings-actions {
+    flex: 0 0 auto;
+    background: #fff;
+}
 .btn {
     padding: 10px 20px; border: none; border-radius: var(--radius-sm); color: #fff;
     font-size: 14px; font-weight: 600; cursor: pointer; transition: 0.2s;
@@ -193,14 +212,15 @@ body { font-family: "Noto Sans SC", sans-serif; background: linear-gradient(135d
     .plugin-desc { font-size: 12px; min-height: 0; }
     .settings-btn { width: 100%; padding: 10px; }
     .modal { padding: 16px; margin: 10px; max-height: 90vh; }
+    .plugin-settings-content { max-height: 90vh !important; padding: 16px !important; }
     .modal-header { margin-bottom: 14px; padding-bottom: 12px; }
     .modal-title { font-size: 16px; }
     /* 表单改为纵向排列 */
     .form-row { flex-direction: column; gap: 6px; padding: 10px 0; }
     .form-label { width: auto; padding-top: 0; font-size: 12px; }
     .form-input, .form-textarea, .form-select { font-size: 13px; padding: 8px 10px; }
-    .modal-actions { margin-top: 16px; padding-top: 12px; flex-direction: column-reverse; }
-    .modal-actions .btn { width: 100%; }
+    .plugin-settings-actions { margin-top: 16px !important; padding-top: 12px !important; }
+    .plugin-settings-actions button { flex: 1; padding: 10px 12px !important; }
 }
 </style>
 </head>
@@ -239,12 +259,13 @@ body { font-family: "Noto Sans SC", sans-serif; background: linear-gradient(135d
     </div>
 </div>
 
-<script src="/js/api.js"></script>
+<script src="/js/api.js?v=20261004-ai-platform-editor"></script>
 <script src="/js/app.js"></script>
 <script>
 let currentPlugins = [];
 let currentSection = null;
 let currentItems = [];
+let currentAiPlatforms = [];
 
 // HTML 转义 — 防止特殊字符破坏结构
 function _escapeHtml(s) {
@@ -375,6 +396,7 @@ function createModal(plugin) {
     // 创建模态框外层
     var modalOverlay = document.createElement("div");
     modalOverlay.id = "settings-modal";
+    modalOverlay.className = "plugin-settings-modal";
     modalOverlay.style.cssText = `
         display: flex;
         position: fixed;
@@ -391,6 +413,7 @@ function createModal(plugin) {
     
     // 创建模态框内层
     var modalContent = document.createElement("div");
+    modalContent.className = "plugin-settings-content";
     modalContent.style.cssText = `
         background: white;
         border-radius: 12px;
@@ -398,24 +421,24 @@ function createModal(plugin) {
         width: 100%;
         max-width: 680px;
         max-height: 85vh;
-        overflow-y: auto;
+        overflow: hidden;
         box-shadow: 0 12px 40px rgba(31, 58, 74, 0.18);
         position: relative;
     `;
     
     // 创建模态框内容
     modalContent.innerHTML = `
-        <div style="padding-bottom: 16px; margin-bottom: 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center;">
+        <div class="modal-header" style="padding-bottom: 16px; margin-bottom: 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; flex: 0 0 auto;">
             <div>
                 <div style="font-size: 18px; font-weight: 700;">${plugin.label || plugin.name} - 配置</div>
                 <div style="font-size: 12px; color: #999; margin-top: 4px;">${plugin.name}</div>
             </div>
             <button onclick="closeSettingsModal()" style="background: none; border: none; color: #999; font-size: 24px; cursor: pointer; padding: 4px 8px;">×</button>
         </div>
-        <div id="settings-form" style="min-height: 100px;">
+        <div id="settings-form" class="plugin-settings-form" style="min-height: 0;">
             <div style="text-align: center; padding: 40px; color: #666;">加载中...</div>
         </div>
-        <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid #eee; display: flex; gap: 12px; justify-content: flex-end;">
+        <div class="plugin-settings-actions" style="margin-top: 24px; padding-top: 16px; border-top: 1px solid #eee; display: flex; gap: 12px; justify-content: flex-end;">
             <button onclick="closeSettingsModal()" style="padding: 10px 20px; background: #f0f0f0; border: 1px solid #ddd; border-radius: 6px; color: #666; cursor: pointer;">关闭</button>
             <button onclick="savePluginSettings()" style="padding: 10px 20px; background: linear-gradient(135deg, #2BA89E, #3A6E8E); border: none; border-radius: 6px; color: white; cursor: pointer;">保存配置</button>
         </div>
@@ -438,8 +461,19 @@ function createModal(plugin) {
 async function loadPluginConfig(pluginName) {
     try {
         const data = await api.plugins.get(pluginName);
-        console.log("[loadPluginConfig] API 返回数据:", data);
         currentItems = data.items || [];
+        currentAiPlatforms = pluginName === "miku_ai" &&
+            data.ai_model_config && Array.isArray(data.ai_model_config.ai_platforms)
+            ? data.ai_model_config.ai_platforms
+            : [];
+        if (pluginName === "miku_ai") {
+            currentItems.push({
+                key: "ai_platforms",
+                label: "AI平台列表",
+                hint: "平台连接配置保存在全局 AI 模型配置中。",
+                is_ai_platforms: true
+            });
+        }
 
         if (!currentItems.length) {
             document.getElementById("settings-form").innerHTML =
@@ -457,7 +491,17 @@ async function loadPluginConfig(pluginName) {
                 const isList = item.is_list;
                 const hint = item.hint ? '<div style="margin-top:6px;font-size:12px;color:#999;">' + _escapeHtml(item.hint) + '</div>' : '';
 
-                if (isList) {
+                if (item.is_ai_platforms) {
+                    formHtml +=
+                        '<div style="padding:14px 0;border-bottom:1px solid #eee;">' +
+                            '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">' +
+                                '<div style="font-size:13px;font-weight:600;">AI平台列表</div>' +
+                                '<button type="button" onclick="addAiPlatform(' + originalIdx + ')" style="padding:8px 14px;border:0;border-radius:6px;background:linear-gradient(135deg,#2BA89E,#3A6E8E);color:#fff;cursor:pointer;">＋ 添加AI</button>' +
+                            '</div>' +
+                            '<div id="ai-platform-list-' + originalIdx + '" style="margin-top:8px;"></div>' +
+                            hint +
+                        '</div>';
+                } else if (isList) {
                     formHtml += 
                         '<div style="display:flex;gap:16px;padding:14px 0;border-bottom:1px solid #eee;">' +
                             '<div style="width:140px;flex-shrink:0;padding-top:10px;font-size:13px;font-weight:600;">' + 
@@ -487,6 +531,9 @@ async function loadPluginConfig(pluginName) {
                 }
             }
             document.getElementById("settings-form").innerHTML = formHtml;
+            currentItems.forEach(function(item, index) {
+                if (item.is_ai_platforms) renderAiPlatformList(index);
+            });
         }
     } catch (e) {
         console.error("[loadPluginConfig] 加载配置失败:", e);
@@ -496,13 +543,136 @@ async function loadPluginConfig(pluginName) {
     }
 }
 
+function renderAiPlatformList(itemIndex) {
+    const list = document.getElementById("ai-platform-list-" + itemIndex);
+    if (!list) return;
+    if (!currentAiPlatforms.length) {
+        list.innerHTML = '<div style="color:#999;padding:12px 0;">尚未配置平台</div>';
+        return;
+    }
+    list.innerHTML = currentAiPlatforms.map(function(platform, index) {
+        const name = String(platform.name || "").trim() || "未命名AI";
+        return '<button type="button" onclick="openAiPlatformEditor(' + itemIndex + ',' + index + ')" ' +
+            'style="display:block;width:100%;text-align:left;padding:12px 14px;margin:8px 0;border:1px solid #ddd;border-radius:8px;background:#fff;cursor:pointer;">' +
+            '<span style="font-weight:600;">' + _escapeHtml(name) + '</span>' +
+            '<span style="float:right;color:#888;">配置 ›</span></button>';
+    }).join("");
+}
+
+async function saveAiPlatforms(platforms) {
+    await api.plugins.update("miku_ai", { ai_model_config: { ai_platforms: platforms } });
+    currentAiPlatforms = platforms;
+}
+
+async function addAiPlatform(itemIndex) {
+    const platform = {
+        name: "新AI平台",
+        api_key: "",
+        base_url: "",
+        model: "",
+        text_model: ""
+    };
+    const updated = currentAiPlatforms.concat([platform]);
+    try {
+        await saveAiPlatforms(updated);
+        renderAiPlatformList(itemIndex);
+        openAiPlatformEditor(itemIndex, updated.length - 1);
+    } catch (e) {
+        Toast.error("新增AI平台失败: " + e.message);
+    }
+}
+
+function openAiPlatformEditor(itemIndex, platformIndex) {
+    const platform = currentAiPlatforms[platformIndex];
+    if (!platform) return;
+
+    const overlay = document.createElement("div");
+    overlay.id = "ai-platform-editor";
+    overlay.style.cssText = "position:fixed;inset:0;z-index:10001;background:rgba(20,30,40,.55);display:flex;align-items:center;justify-content:center;padding:20px;";
+    overlay.innerHTML =
+        '<div style="background:#fff;border-radius:12px;padding:24px;width:100%;max-width:520px;max-height:85vh;overflow:auto;box-shadow:0 12px 40px rgba(31,58,74,.24);">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">' +
+                '<strong style="font-size:18px;">AI平台配置</strong>' +
+                '<button type="button" data-action="close" style="border:0;background:none;font-size:24px;color:#888;cursor:pointer;">×</button>' +
+            '</div>' +
+            '<label style="display:block;margin:12px 0 6px;">平台名称</label>' +
+            '<input id="ai-platform-name" type="text" value="' + _escapeHtml(platform.name || "") + '" style="box-sizing:border-box;width:100%;padding:10px;border:1px solid #ccc;border-radius:6px;">' +
+            '<label style="display:block;margin:12px 0 6px;">API Key</label>' +
+            '<input id="ai-platform-key" type="password" autocomplete="new-password" value="' + _escapeHtml(platform.api_key || "") + '" style="box-sizing:border-box;width:100%;padding:10px;border:1px solid #ccc;border-radius:6px;">' +
+            '<label style="display:block;margin:12px 0 6px;">Base URL</label>' +
+            '<input id="ai-platform-url" type="url" value="' + _escapeHtml(platform.base_url || "") + '" placeholder="https://api.example.com/v1" style="box-sizing:border-box;width:100%;padding:10px;border:1px solid #ccc;border-radius:6px;">' +
+            '<label style="display:block;margin:12px 0 6px;">多模态模型名</label>' +
+            '<input id="ai-platform-model" type="text" value="' + _escapeHtml(platform.model || "") + '" style="box-sizing:border-box;width:100%;padding:10px;border:1px solid #ccc;border-radius:6px;">' +
+            '<label style="display:block;margin:12px 0 6px;">纯文本模型名（选填）</label>' +
+            '<input id="ai-platform-text-model" type="text" value="' + _escapeHtml(platform.text_model || "") + '" style="box-sizing:border-box;width:100%;padding:10px;border:1px solid #ccc;border-radius:6px;">' +
+            '<div style="display:flex;justify-content:space-between;gap:10px;margin-top:24px;">' +
+                '<button type="button" data-action="delete" style="padding:9px 16px;border:1px solid #d44;border-radius:6px;background:#fff;color:#c33;cursor:pointer;">删除平台</button>' +
+                '<div style="display:flex;gap:10px;">' +
+                    '<button type="button" data-action="cancel" style="padding:9px 16px;border:1px solid #ccc;border-radius:6px;background:#f5f5f5;cursor:pointer;">取消</button>' +
+                    '<button type="button" data-action="save" style="padding:9px 16px;border:0;border-radius:6px;background:linear-gradient(135deg,#2BA89E,#3A6E8E);color:#fff;cursor:pointer;">保存平台</button>' +
+                '</div>' +
+            '</div>' +
+        '</div>';
+
+    function closeEditor() {
+        overlay.remove();
+    }
+
+    overlay.addEventListener("click", async function(event) {
+        const action = event.target.dataset.action;
+        if (event.target === overlay || action === "close" || action === "cancel") {
+            closeEditor();
+            return;
+        }
+        if (action === "save") {
+            const updatedPlatform = {
+                name: document.getElementById("ai-platform-name").value.trim(),
+                api_key: document.getElementById("ai-platform-key").value.trim(),
+                base_url: document.getElementById("ai-platform-url").value.trim(),
+                model: document.getElementById("ai-platform-model").value.trim(),
+                text_model: document.getElementById("ai-platform-text-model").value.trim()
+            };
+            if (!updatedPlatform.name || !updatedPlatform.base_url || !updatedPlatform.model) {
+                Toast.error("平台名称、Base URL 和多模态模型名不能为空");
+                return;
+            }
+            const updated = currentAiPlatforms.slice();
+            updated[platformIndex] = updatedPlatform;
+            try {
+                await saveAiPlatforms(updated);
+                renderAiPlatformList(itemIndex);
+                closeEditor();
+                Toast.success("AI平台已保存");
+            } catch (e) {
+                Toast.error("保存AI平台失败: " + e.message);
+            }
+            return;
+        }
+        if (action === "delete") {
+            if (!confirm("确定删除该 AI 平台吗？")) return;
+            const updated = currentAiPlatforms.filter(function(_, index) {
+                return index !== platformIndex;
+            });
+            try {
+                await saveAiPlatforms(updated);
+                renderAiPlatformList(itemIndex);
+                closeEditor();
+                Toast.success("AI平台已删除");
+            } catch (e) {
+                Toast.error("删除AI平台失败: " + e.message);
+            }
+        }
+    });
+    document.body.appendChild(overlay);
+}
+
 async function savePluginSettings() {
     if (!currentSection) return;
     const items = [];
     // 用 currentItems 的索引查找元素，元素的 id 是 "setting-" + 原始索引
     for (let i = 0; i < currentItems.length; i++) {
         const el = document.getElementById("setting-" + i);
-        if (el) {
+        if (el && currentItems[i].key !== "ai_platforms") {
             items.push({
                 key: el.dataset.key,
                 value: el.value,
@@ -529,6 +699,7 @@ function closeSettingsModal() {
     }
     currentSection = null;
     currentItems = [];
+    currentAiPlatforms = [];
 }
 
 function testModal() {

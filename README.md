@@ -5,7 +5,7 @@
 ## 功能特性
 
 - **截图引擎**：使用系统 **Edge** 浏览器渲染 HTML 模板生成图片（Playwright `channel="msedge"`），无需下载 Chromium
-- **YAML 配置管理**：`config/bot.yaml` 统一管理所有插件配置，支持热加载
+- **YAML 配置管理**：`config/bot.yaml` 管理插件配置，`config/ai_models.yaml` 独立管理全局 AI 模型连接
 - **依赖自动检测**：启动前自动检测 `.venv` 依赖，缺失则自动安装
 - **首次配置向导**：终端交互式输入管理员 QQ 号和密码
 - **自定义日志系统**：ANSI 高亮、消息截断、心跳过滤、文件轮转
@@ -25,10 +25,9 @@ miku_bot/
 │   └── 缓存清理任务
 ├── start.bat                       # Windows 启动脚本
 ├── start.sh                        # Linux/Mac/Git Bash 启动脚本
-├── .env                            # 环境变量（SUPERUSERS、WEBUI_PASSWORD）
-├── .env.dev / .env.prod            # 开发/生产环境
 ├── requirements.txt                # Python 依赖
 ├── pyproject.toml                  # NoneBot 项目配置
+├── uv.lock                         # 锁定的依赖版本
 │
 ├── plugins/                         # 全部插件（管理、娱乐、订阅等）
 │   └── miku_admin/                  # 管理员插件
@@ -42,6 +41,7 @@ miku_bot/
 │   ├── check_deps.py                # 依赖检测 + 自动安装
 │   ├── deps_config.py               # 依赖配置（从 requirements.txt 解析）
 │   ├── config_manager.py            # YAML 配置管理（bot.yaml）
+│   ├── ai_model_config.py           # 全局 AI 模型配置及旧配置迁移
 │   ├── version_manager.py           # 版本管理（GitHub 版本检查）
 │   ├── updater.py                   # 自动更新（下载 + 覆盖 + 重启）
 │   ├── html_render.py               # HTML 模板渲染
@@ -52,12 +52,9 @@ miku_bot/
 │
 ├── version.json                     # 版本信息（自动维护）
 │
-├── config/                          # 配置文件
-│   └── bot.yaml                     # 插件统一配置（YAML 格式）
-├── data/                            # 数据目录
-│   └── images/                      # 截图输出
-├── logs/                            # 日志目录
-│   └── bot_YYYY-MM-DD.log           # 按天轮转日志
+├── config/                          # 本地运行配置（首次启动时生成，不提交）
+├── data/                            # 本地用户数据和缓存（不提交）
+├── logs/                            # 本地运行日志（不提交）
 └── ...
 ```
 
@@ -69,44 +66,44 @@ miku_bot/
 
 - 系统已安装 **Microsoft Edge**（Windows 10/11 默认已安装）
 - 系统已安装 **Python 3.10+**
+- 已安装 [uv](https://docs.astral.sh/uv/)
 
-### 方式一：双击 start.bat（Windows）
+### 方式一：运行 start.bat（Windows）
 
-```
-D:\qqbot\miku_bot\start.bat
+在仓库根目录双击 `start.bat`，或在终端中运行：
+
+```bat
+.\start.bat
 ```
 
 脚本自动完成：
-1. 检测 `.venv` 虚拟环境
-2. 检测依赖（缺失则自动 `pip install`）
-3. 检测 Edge 浏览器
-4. 启动 Bot
+1. 使用 `uv sync` 按 `uv.lock` 安装依赖
+2. 检测 Edge 浏览器
+3. 启动 Bot
 
-首次启动会弹出配置向导：
+首次启动会弹出配置向导，管理员 QQ 号和 WebUI 密码由你在本机输入：
 
 ```
 ==================================================
          MikuBot 首次配置向导
 ==================================================
 [步骤 1/2] 设置管理员 QQ 号
-  请输入你的 QQ 号: 123456789
-  [OK] 管理员 QQ 号已设置为: 123456789
+  请输入你的 QQ 号: <你的 QQ 号>
+  [OK] 管理员 QQ 号已设置
 
 [步骤 2/2] 设置 WebUI 登录密码
   WebUI 直接密码登录，不需要账号/用户名
-  请输入密码: MySecret
+  请输入密码: <你设置的密码>
   [OK] WebUI 密码已设置
 ```
 
 ### 方式二：命令行启动
 
 ```bash
-# Windows cmd
-cd D:\qqbot\miku_bot
-.venv\Scripts\python.exe bot.py
+# Windows cmd / PowerShell，在仓库根目录运行
+uv run python bot.py
 
-# Git Bash
-cd /d/qqbot/miku_bot
+# Linux / macOS / Git Bash，在仓库根目录运行
 bash start.sh
 ```
 
@@ -118,8 +115,12 @@ bash start.sh
 
 | 文件 | 用途 | 修改方式 |
 |------|------|----------|
-| `.env` | 环境变量（SUPERUSERS、WEBUI_PASSWORD、端口） | 首次启动向导自动填写，或手动编辑 |
-| `config/bot.yaml` | 插件运行时配置（按插件分区） | 发送「刷新配置」热加载，或手动编辑后 reload |
+| `.env` | 本地环境变量（SUPERUSERS、WEBUI_PASSWORD、端口） | 首次启动向导创建；不要提交到 Git |
+| `config/bot.yaml` | 插件运行时配置（按插件分区） | 首次运行时生成；发送「刷新配置」热加载 |
+| `config/ai_models.yaml` | 全局 AI 平台列表及本地模型连接配置 | 在管理后台配置；API Key 只保存在本地，不要提交到 Git |
+
+这些文件包含本机设置，仓库不会提供真实配置。旧版 `miku_ai.ai_platforms` 和 `local_*` 配置会在首次加载时自动迁移到 `config/ai_models.yaml`，其余插件设置仍保留在 `bot.yaml`。
+AI聊天插件设置中的平台列表只显示平台名称；点击名称可在二级弹窗中查看/修改 API Key、Base URL、多模态模型及纯文本模型，也可新增或删除平台。
 
 ### 插件配置注册（代码示例）
 
@@ -315,18 +316,10 @@ Bot 自动下载最新代码并重启：
 
 ## 分发部署
 
-项目文件夹（含 `.venv`）可直接打包发给其他人：
-
-1. 所有依赖安装在项目目录 `.venv` 中，不依赖系统 Python
-2. 双击 `start.bat` 即可自动检测并启动
-3. 首次启动会弹出交互式配置向导
-4. 截图使用系统 Edge，无需额外下载浏览器
+从 GitHub 获取代码后，在仓库根目录运行 `start.bat`（Windows）或 `bash start.sh`（Linux/macOS/Git Bash）。启动脚本会根据 `uv.lock` 创建本机虚拟环境并安装依赖；首次启动时按向导配置本机账号和密码。不要分发或提交 `.env`、`config/` 中的本机配置、Cookie 或 API Key。
 
 ---
 
-## 开发计划
+## 贡献
 
-- [ ] 插件索引市场（plugins_index 扩展）
-- [ ] 接入 AI 对话，渲染对话卡片
-- [ ] 数据库 + 签到/好感度系统
-- [ ] WebUI 管理面板（密码登录）
+欢迎通过 GitHub Issues 反馈问题，或提交 Pull Request。

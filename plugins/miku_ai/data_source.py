@@ -187,38 +187,12 @@ def _get_special_user_info(user_id: str, user_name: str = "") -> Optional[Dict]:
     return None
 
 
-def build_system_prompt(user_id: str = "", user_name: str = "", is_group: bool = False) -> str:
+def build_system_prompt() -> str:
     base_personality = _load_personality()
     parts = [base_personality]
 
-    favor = get_history_manager().get_favor(user_id) if user_id else 0.0
-    favor_affect = bool(get_config("favor_affect_reply", True))
-    if favor_affect and user_id and favor != 0:
-        if favor >= 50:
-            parts.append(f"\n\n当前你对这位用户的好感度非常高（{favor}/100），你很喜欢和他/她聊天，语气可以更亲昵一些。")
-        elif favor >= 20:
-            parts.append(f"\n\n当前你对这位用户的好感度较高（{favor}/100），你对他/她有好感，语气可以更亲近一些。")
-        elif favor <= -30:
-            parts.append(f"\n\n当前你对这位用户的好感度很低（{favor}/100），你有点讨厌他/她，语气可以冷淡一些。")
-        elif favor <= -10:
-            parts.append(f"\n\n当前你对这位用户的好感度较低（{favor}/100），你对他/她有点反感，语气可以稍微冷淡。")
-
-    special = _get_special_user_info(user_id, user_name)
-    if special:
-        identity = special.get("identity", "")
-        desc = special.get("description", "")
-        address = special.get("address_as", "")
-        tone = special.get("tone", "")
-        if identity:
-            parts.append(f"\n\n注意：当前对话对象是{identity}。")
-        if desc:
-            parts.append(f"关于他/她：{desc}")
-        if address:
-            parts.append(f"你对他/她的称呼可以是：{address}")
-        if tone:
-            parts.append(f"语气调整：{tone}")
-
-    # leekchat 风格：添加回复风格提示
+    # Keep per-user and per-session data out of this prompt so its prefix remains
+    # identical across conversations and can be reused by upstream prompt caches.
     reply_style_base = str(get_config("reply_style_base", "") or "")
     if reply_style_base:
         parts.append(f"\n\n回复风格：{reply_style_base}")
@@ -243,8 +217,41 @@ def build_system_prompt(user_id: str = "", user_name: str = "", is_group: bool =
     parts.append("- 保持可爱活泼，但遇到越界内容时，好感度高的用户可以稍微委婉，陌生人则要明确拒绝。")
     parts.append("- 你16岁，遇到涉及年龄不适当的内容（如性暗示、酒精、暴力），要表示\"这种事Miku不太懂呢\"并转移话题。")
 
+    return "\n".join(parts)
+
+
+def build_user_context_prompt(user_id: str, user_name: str, is_group: bool) -> str:
+    """Build per-user/session instructions separately from the cacheable system prompt."""
+    parts = []
+    favor = get_history_manager().get_favor(user_id) if user_id else 0.0
+    favor_affect = bool(get_config("favor_affect_reply", True))
+    if favor_affect and user_id and favor != 0:
+        if favor >= 50:
+            parts.append("当前你对这位用户的好感度非常高，你很喜欢和他/她聊天，语气可以更亲昵一些。")
+        elif favor >= 20:
+            parts.append("当前你对这位用户的好感度较高，你对他/她有好感，语气可以更亲近一些。")
+        elif favor <= -30:
+            parts.append("当前你对这位用户的好感度很低，你有点讨厌他/她，语气可以冷淡一些。")
+        elif favor <= -10:
+            parts.append("当前你对这位用户的好感度较低，你对他/她有点反感，语气可以稍微冷淡。")
+
+    special = _get_special_user_info(user_id, user_name)
+    if special:
+        identity = special.get("identity", "")
+        desc = special.get("description", "")
+        address = special.get("address_as", "")
+        tone = special.get("tone", "")
+        if identity:
+            parts.append(f"注意：当前对话对象是{identity}。")
+        if desc:
+            parts.append(f"关于他/她：{desc}")
+        if address:
+            parts.append(f"你对他/她的称呼可以是：{address}")
+        if tone:
+            parts.append(f"语气调整：{tone}")
+
     if is_group:
-        parts.append("5. 你正在群聊中发言，保持活泼、简洁，不要啰嗦。")
+        parts.append("你正在群聊中发言，保持活泼、简洁，不要啰嗦。")
 
     return "\n".join(parts)
 
@@ -432,12 +439,25 @@ async def _call_ai_api(messages: List[Dict], temperature: float = 1.0,
     raise last_exc or AIResultException("AI 请求失败")
 
 
+def _decode_ai_response(response: httpx.Response, platform_name: str):
+    try:
+        return response.json()
+    except json.JSONDecodeError as e:
+        logger.warning(
+            f"[miku_ai] AI API 返回无效 JSON (平台 {platform_name}, "
+            f"HTTP {response.status_code}, Content-Type {response.headers.get('content-type', 'unknown')})"
+        )
+        err = AIResultException(f"平台 {platform_name} 返回了无效 JSON 响应")
+        err.failover_cooldown = PLATFORM_COOLDOWN_DEFAULT
+        raise err from e
+
+
 async def _call_ai_api_once(platform: Dict[str, str], raw_messages: List[Dict],
                             has_image: bool, temperature: float = 1.0,
                             max_tokens: int = 0, request_timeout: int = 0,
                             model: str = "", thinking: bool = True) -> str:
     """单平台 AI 调用：平台级故障（429/402/401/403/5xx/连接失败）抛出带
-    failover_cooldown 属性的异常由外层切换平台；请求级错误（400等）直接抛出"""
+    failover_cooldown 属性的异常由外层切换平台；无效 JSON 和请求级错误（400等）分别处理"""
     name = platform["name"]
 
     # 模型选择：显式指定优先；否则识图用多模态模型，纯文本优先 text_model（更快更便宜）
@@ -527,7 +547,7 @@ async def _call_ai_api_once(platform: Dict[str, str], raw_messages: List[Dict],
                 if cooldown > 0:
                     err.failover_cooldown = cooldown
                 raise err
-            data = r.json()
+            data = _decode_ai_response(r, name)
             logger.debug(f"[miku_ai] AI API 响应结构: keys={list(data.keys()) if isinstance(data, dict) else type(data).__name__}")
             choices = data.get("choices", []) if isinstance(data, dict) else []
             if not choices:
@@ -544,7 +564,7 @@ async def _call_ai_api_once(platform: Dict[str, str], raw_messages: List[Dict],
                     body["max_tokens"] = min(max_tokens * 3, 32000)
                     r2 = await client.post(url, headers=headers, json=body)
                     if r2.status_code == 200:
-                        data2 = r2.json()
+                        data2 = _decode_ai_response(r2, name)
                         choices2 = data2.get("choices", []) if isinstance(data2, dict) else []
                         if choices2:
                             content = _extract_content(choices2[0])
@@ -787,9 +807,9 @@ async def process_chat(user_id: str, user_name: str, text: str,
                         })
                     return "[图片]", img_url
 
-        results = []
-        for i, url in enumerate(image_urls):
-            results.append(await _process_one(i, url))
+        results = await asyncio.gather(
+            *(_process_one(i, url) for i, url in enumerate(image_urls))
+        )
 
         for desc, url in results:
             processed_image_descriptions.append(desc)
@@ -843,9 +863,9 @@ async def process_chat(user_id: str, user_name: str, text: str,
             logger.info(f"[miku_ai] planner决定等待: {plan.reason}")
             return "", {"planner_wait": True, "reason": plan.reason}
 
-    # 构建系统提示词（前缀稳定原则：system_prompt 保持字节级不变以命中端砚
-    # 服务端前缀缓存；敏感词等随消息变化的提示后置到 dynamic_context 末尾）
-    system_prompt = build_system_prompt(user_id, user_name, is_group)
+    # Keep the common system prompt stable for upstream prefix-cache reuse.
+    system_prompt = build_system_prompt()
+    user_context_prompt = build_user_context_prompt(user_id, user_name, is_group)
 
     # ── 敏感词检测结果：不并入 system_prompt（会破坏前缀缓存），暂存后注入 dynamic_context ──
     sensitive_hint = ""
@@ -909,6 +929,10 @@ async def process_chat(user_id: str, user_name: str, text: str,
         session_id, is_group=is_group, system_prompt=system_prompt,
         bot_nickname=bot_nickname, exclude_message_id=str(message_id or "")
     )
+    if user_context_prompt:
+        # Keep user-specific instructions as a separate system message so the
+        # shared system prompt remains the same cacheable prefix for every chat.
+        context_messages.insert(1, {"role": "system", "content": user_context_prompt})
 
     # ── 用户消息过长自动截断（在构建context之前） ──
     max_user_chars = int(get_config("max_user_msg_chars", 1000) or 1000)
@@ -968,13 +992,15 @@ async def process_chat(user_id: str, user_name: str, text: str,
 
     total_chars = sum(_msg_chars(m) for m in context_messages)
     if total_chars > max_context_chars:
-        # 保留 system(第一条)，从第二条开始逐条丢弃最旧的
-        system_msg = context_messages[0] if context_messages else None
-        history = context_messages[1:] if system_msg else list(context_messages)
-        while history and sum(_msg_chars(m) for m in ([system_msg] if system_msg else []) + history) > max_context_chars:
+        # 保留前置 system 消息，从最旧的对话消息开始截断。
+        system_messages = []
+        while context_messages and context_messages[0].get("role") == "system":
+            system_messages.append(context_messages.pop(0))
+        history = list(context_messages)
+        while history and sum(_msg_chars(m) for m in system_messages + history) > max_context_chars:
             dropped = history.pop(0)
             logger.debug(f"[miku_ai] 丢弃旧消息: {str(dropped.get('content', ''))[:50]}...")
-        context_messages = ([system_msg] if system_msg else []) + history
+        context_messages = system_messages + history
         logger.warning(f"[miku_ai] 上下文截断: {total_chars}→{sum(_msg_chars(m) for m in context_messages)}字符, 保留{len(context_messages)}条")
 
     temperature = float(get_config("temperature", 1.0) or 1.0)

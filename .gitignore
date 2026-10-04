@@ -99,7 +99,14 @@ start_bot.bat
 # Private runtime configs (removed from tracking, history rewritten 2026-10-03)
 # =====================================
 config/bot.yaml
+config/ai_models.yaml
+config/ai_models.yaml.tmp
+config/backups/
 config/group_welcome.json
 config/welcome_imgs/
 启动.bat
 
+# Generated dependencies, caches, and local-only files
+admin_web/assets/.wrangler/
+.uploads/
+temp_test/

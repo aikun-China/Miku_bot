@@ -189,9 +189,17 @@ api.plugins = {
     update: function (name, data) { return request("PUT", "/plugins/" + encodeURIComponent(name), data); }
 };
 api.config = {
-    get: function () { return request("GET", "/config"); },
-    update: function (content) { return request("PUT", "/config", { content: content }); },
-    restoreBackup: function (timestamp) { return request("POST", "/config/backup/" + timestamp + "/restore"); }
+    get: function (target) {
+        return request("GET", "/config" + (target && target !== "bot" ? "?target=" + encodeURIComponent(target) : ""));
+    },
+    update: function (content, target) {
+        return request("PUT", "/config", { content: content, target: target || "bot" });
+    },
+    restoreBackup: function (timestamp, target) {
+        var url = "/config/backup/" + encodeURIComponent(timestamp) + "/restore";
+        if (target && target !== "bot") url += "?target=" + encodeURIComponent(target);
+        return request("POST", url);
+    }
 };
 api.blacklist = {
     get: function () { return request("GET", "/blacklist"); },

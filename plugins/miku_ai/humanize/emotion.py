@@ -78,7 +78,6 @@ class EmotionAgent:
         )
         try:
             from ..data_source import _call_ai_api
-            model = str(get_config("cloud_model", "") or get_config("local_model", ""))
             messages = [{"role": "user", "content": prompt}]
             resp_text = await _call_ai_api(messages, temperature=0.2, max_tokens=20)
             picked = resp_text.strip().split()[0:1]

@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from utils.config_manager import config_manager
+from utils.ai_model_config import LEGACY_AI_CONFIG_MIGRATED, get_ai_model_config
+
+if LEGACY_AI_CONFIG_MIGRATED:
+    config_manager.reload()
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
@@ -26,47 +30,8 @@ _AI_TEMPLATE = (
     "  # 响应风格：card（图片卡片）/ text（纯文本）\n"
     "  response_style: card\n"
     "\n"
-    "  # 接入方式：cloud（云端）/ local（本地 Ollama 等 OpenAI 兼容服务）\n"
-    "  # 提示：如果不配置 cloud_api_key，会自动尝试使用本地模式\n"
-    "  api_mode: cloud\n"
-    "\n"
-    "  # ── 云端 AI 配置 ──\n"
-    "  # API Key（选填，不填则自动切换到本地模式）\n"
-    "  # 智谱AI: https://open.bigmodel.cn/（glm-4.6v 支持文本+图片）\n"
-    "  cloud_api_key: ''\n"
-    "  # API Base URL（OpenAI 兼容接口）\n"
-    "  #   智谱AI:   https://open.bigmodel.cn/api/paas/v4\n"
-    "  #   DeepSeek: https://api.deepseek.com/v1\n"
-    "  #   通义千问:  https://dashscope.aliyuncs.com/compatible-mode/v1\n"
-    "  #   OpenAI:   https://api.openai.com/v1\n"
-    "  cloud_base_url: https://open.bigmodel.cn/api/paas/v4\n"
-    "  # 识图/多模态模型名（glm-4.6v 支持文本+图片）\n"
-    "  cloud_model: glm-4.6v\n"
-    "  # 纯文本模型名（不用深度思考，响应更快更短）\n"
-    "  cloud_text_model: glm-4.5-air\n"
     "  # 文本模型最大输出 token（推理模型需给 reasoning_content 留余量）\n"
     "  text_max_tokens: 8192\n"
-    "\n"
-    "  # ── 多平台故障转移 ──\n"
-    "  # 平台列表：按顺序尝试，当前平台不可用（限流/余额不足/鉴权失败/宕机）时自动切换下一个\n"
-    "  # 配置后上方 cloud_*/local_* 单平台配置将被忽略；留空时用单平台配置并自动以本地兜底\n"
-    "  ai_platforms: []\n"
-    "  # 平台字段：name(标识，可自定义) / api_key / base_url / model(识图/多模态) / text_model(纯文本，留空用 model)\n"
-    "  # 示例：\n"
-    "  # ai_platforms:\n"
-    "  #   - name: 端砚\n"
-    "  #     api_key: 'sk-xxx'\n"
-    "  #     base_url: https://discovery-api.intern-ai.org.cn/v1\n"
-    "  #     model: kimi-k2.6\n"
-    "  #     text_model: ''\n"
-    "\n"
-    "  # ── 本地 AI 配置（Ollama / LM Studio 等 OpenAI 兼容服务） ──\n"
-    "  # 本地 API Base URL（例如 Ollama 默认 http://localhost:11434/v1）\n"
-    "  local_base_url: http://localhost:11434/v1\n"
-    "  # 本地模型名（例如 qwen2.5:7b / llama3:8b / mistral:latest）\n"
-    "  local_model: qwen2.5:7b\n"
-    "  # 本地 API Key（通常 Ollama 不需要，留空即可）\n"
-    "  local_api_key: ''\n"
     "\n"
     "  # ── 识图配置 ──\n"
     "  # 识图并发数\n"
@@ -273,16 +238,7 @@ _cfg = config_manager.register_plugin(
     defaults={
         "enabled": True,
         "response_style": "card",
-        "api_mode": "cloud",
-        "cloud_api_key": "",
-        "cloud_base_url": "https://open.bigmodel.cn/api/paas/v4",
-        "cloud_model": "glm-4.6v",
-        "cloud_text_model": "glm-4.5-air",
         "text_max_tokens": 8192,
-        "ai_platforms": [],
-        "local_base_url": "http://localhost:11434/v1",
-        "local_model": "qwen2.5:7b",
-        "local_api_key": "",
         "group_reply_on_mention": True,
         "private_reply_every": True,
         "group_history_max": 1000,
@@ -429,10 +385,11 @@ _AUTH_KEYWORDS = (
 
 def get_ai_platforms() -> List[Dict[str, str]]:
     """读取 AI 平台列表（多平台故障转移用）。
-    优先使用 ai_platforms 列表配置；未配置时用旧版 cloud_*/local_* 平铺键合成（向后兼容）。
+    优先使用 ai_platforms 列表配置；未配置时使用本地 AI 配置作为兜底。
     返回前按冷却状态排序：可用平台在前（保持配置顺序），冷却中的垫底；
     全部处于冷却时仍全部返回（兜底总得试试）。"""
-    raw = get_config("ai_platforms", None)
+    model_config = get_ai_model_config()
+    raw = model_config.get("ai_platforms")
     platforms: List[Dict[str, str]] = []
     if isinstance(raw, list):
         for p in raw:
@@ -450,26 +407,12 @@ def get_ai_platforms() -> List[Dict[str, str]]:
                 "text_model": str(p.get("text_model", "") or "").strip(),
             })
     if not platforms:
-        # 向后兼容：旧版单平台配置 → 云端在前、本地兜底
-        api_mode = str(get_config("api_mode", "cloud") or "cloud").lower()
-        if api_mode == "cloud":
-            cloud_key = str(get_config("cloud_api_key", "") or "")
-            cloud_url = str(get_config("cloud_base_url", "") or "").rstrip("/")
-            cloud_model = str(get_config("cloud_model", "") or "")
-            if cloud_key and cloud_url and cloud_model:
-                platforms.append({
-                    "name": "云端",
-                    "api_key": cloud_key,
-                    "base_url": cloud_url,
-                    "model": cloud_model,
-                    "text_model": str(get_config("cloud_text_model", "") or "").strip(),
-                })
-        local_url = str(get_config("local_base_url", "") or "").rstrip("/")
-        local_model = str(get_config("local_model", "") or "")
+        local_url = str(model_config.get("local_base_url", "") or "").rstrip("/")
+        local_model = str(model_config.get("local_model", "") or "")
         if local_url and local_model:
             platforms.append({
                 "name": "本地",
-                "api_key": str(get_config("local_api_key", "") or ""),
+                "api_key": str(model_config.get("local_api_key", "") or ""),
                 "base_url": local_url,
                 "model": local_model,
                 "text_model": "",

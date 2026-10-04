@@ -45,6 +45,20 @@ except Exception:
     _config_manager = None
     _HAS_CONFIG_MANAGER = False
 
+from utils.ai_model_config import (
+    AI_MODEL_CONFIG_KEYS,
+    AI_MODEL_CONFIG_FILE,
+    LEGACY_AI_CONFIG_MIGRATED,
+    default_ai_model_config_text,
+    get_ai_model_config,
+    migrate_legacy_ai_config,
+    parse_ai_model_config,
+    save_ai_model_config,
+)
+
+if LEGACY_AI_CONFIG_MIGRATED and _HAS_CONFIG_MANAGER and _config_manager is not None:
+    _config_manager.reload()
+
 
 # ===================== 路径 & 常量 =====================
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -312,15 +326,6 @@ _CONFIG_LABELS: Dict[str, Dict[str, Dict[str, str]]] = {
     "miku_ai": {
         "enabled": {"label": "启用", "hint": "true=启用AI对话插件；false=禁用"},
         "response_style": {"label": "响应风格", "hint": "card=生成图片卡片；text=纯文本"},
-        "api_mode": {"label": "接入方式", "hint": "cloud=使用云端API；local=使用本地Ollama等API"},
-        "cloud_api_key": {"label": "云端API Key", "hint": "云端服务（如DeepSeek/OpenAI）的API Key"},
-        "cloud_base_url": {"label": "云端Base URL", "hint": "云端服务的Base URL，如https://api.deepseek.com/v1"},
-        "cloud_model": {"label": "云端模型", "hint": "使用的云端模型名称，如deepseek-chat/gpt-4o"},
-        "cloud_vision_model": {"label": "云端识图模型", "hint": "识图用的模型名，留空则使用cloud_model"},
-        "local_base_url": {"label": "本地Base URL", "hint": "本地Ollama等本地AI服务的Base URL"},
-        "local_model": {"label": "本地模型", "hint": "本地模型名称，如qwen2.5:7b"},
-        "local_vision_model": {"label": "本地识图模型", "hint": "本地识图模型名称，留空则使用local_model"},
-        "local_api_key": {"label": "本地API Key", "hint": "本地API Key（Ollama通常不需要，留空即可"},
         "group_reply_on_mention": {"label": "群聊@回复", "hint": "true=群聊中@Bot或提到Bot时自动回复"},
         "group_random_reply_percent": {"label": "群聊随机回复概率", "hint": "群聊中无@时的随机回复概率(0-100)，单位为%"},
         "private_reply_every": {"label": "单聊全部回复", "hint": "true=私聊每条消息都回复；false=不主动回复"},
@@ -393,6 +398,8 @@ def _get_section_description(section: str) -> str:
 def _value_to_input(val: Any) -> str:
     """将 Python 值转换为输入框字符串"""
     if isinstance(val, list):
+        if any(isinstance(item, dict) for item in val):
+            return json.dumps(val, ensure_ascii=False, indent=2)
         parts = []
         for item in val:
             if isinstance(item, str):
@@ -531,20 +538,31 @@ def _get_plugin_list() -> List[Dict[str, Any]]:
     return plugins
 
 
-def _create_backup():
-    if not CONFIG_FILE.exists():
+def _config_file_for(target: str) -> Path:
+    if target == "bot":
+        return CONFIG_FILE
+    if target == "ai-models":
+        return AI_MODEL_CONFIG_FILE
+    raise HTTPException(status_code=400, detail="未知配置文件")
+
+
+def _create_backup(target: str = "bot"):
+    config_file = _config_file_for(target)
+    if not config_file.exists():
         return None
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_path = BACKUP_DIR / f"bot.yaml.{timestamp}"
-    shutil.copy2(CONFIG_FILE, backup_path)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    backup_path = BACKUP_DIR / f"{config_file.name}.{timestamp}"
+    shutil.copy2(config_file, backup_path)
     return timestamp
 
 
-def _get_backups() -> List[Dict[str, Any]]:
+def _get_backups(target: str = "bot") -> List[Dict[str, Any]]:
     backups = []
     try:
-        for f in sorted(BACKUP_DIR.glob("bot.yaml.*"), reverse=True)[:20]:
-            backups.append({"timestamp": f.stem.replace("bot.yaml.", ""), "size": f.stat().st_size})
+        config_file = _config_file_for(target)
+        prefix = f"{config_file.name}."
+        for f in sorted(BACKUP_DIR.glob(f"{prefix}*"), reverse=True)[:20]:
+            backups.append({"timestamp": f.name.removeprefix(prefix), "size": f.stat().st_size})
     except Exception:
         pass
     return backups
@@ -2718,6 +2736,7 @@ def _mount_admin():
             "plugin": plugin_info,
             "items": items,
             "raw_config": raw_config if isinstance(raw_config, dict) else {},
+            "ai_model_config": get_ai_model_config() if name == "miku_ai" else None,
         }
 
     @api_router.put("/plugins/{name}")
@@ -2727,6 +2746,40 @@ def _mount_admin():
             body = await req.json()
         except Exception:
             body = {}
+
+        if name == "miku_ai":
+            config_values = body.get("config", {})
+            item_values = body.get("items", [])
+            legacy_keys = set(config_values) & AI_MODEL_CONFIG_KEYS if isinstance(config_values, dict) else set()
+            if isinstance(item_values, list):
+                legacy_keys.update(
+                    item.get("key")
+                    for item in item_values
+                    if isinstance(item, dict)
+                    and isinstance(item.get("key"), str)
+                    and item.get("key") in AI_MODEL_CONFIG_KEYS
+                )
+            if legacy_keys:
+                raise HTTPException(
+                    status_code=400,
+                    detail="AI 模型连接配置已独立，请到「配置编辑 - 全局 AI 模型」中修改",
+                )
+
+            if "ai_model_config" in body:
+                model_config = body["ai_model_config"]
+                if not isinstance(model_config, dict) or not isinstance(
+                    model_config.get("ai_platforms"), list
+                ) or any(not isinstance(platform, dict) for platform in model_config["ai_platforms"]):
+                    raise HTTPException(status_code=400, detail="AI平台列表必须是对象数组")
+                try:
+                    current_model_config = get_ai_model_config()
+                    current_model_config["ai_platforms"] = model_config["ai_platforms"]
+                    save_ai_model_config(current_model_config)
+                except (OSError, ValueError, yaml.YAMLError) as e:
+                    raise HTTPException(status_code=400, detail=f"AI平台配置保存失败: {e}") from e
+                if not any(key in body for key in ("enabled", "config", "items")):
+                    logger.success("[WebUI] 全局 AI 平台列表已热更新")
+                    return {"success": True}
 
         data = _load_yaml()
         if not isinstance(data, dict):
@@ -2756,6 +2809,11 @@ def _mount_admin():
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"写入失败: {e}")
 
+        try:
+            migrate_legacy_ai_config()
+        except (OSError, ValueError, yaml.YAMLError) as e:
+            raise HTTPException(status_code=500, detail=f"清理旧版 AI 模型配置失败: {e}") from e
+
         # 热更新：通知 config_manager 从磁盘重新读取
         if _HAS_CONFIG_MANAGER and _config_manager is not None:
             try:
@@ -2767,12 +2825,15 @@ def _mount_admin():
         return {"success": True}
 
     @api_router.get("/config")
-    async def api_config(req: Request):
+    async def api_config(req: Request, target: str = "bot"):
         _require_auth(req)
+        config_file = _config_file_for(target)
         content = ""
-        if CONFIG_FILE.exists():
-            content = CONFIG_FILE.read_text(encoding="utf-8")
-        return {"content": content, "backups": _get_backups()}
+        if config_file.exists():
+            content = config_file.read_text(encoding="utf-8")
+        elif target == "ai-models":
+            content = default_ai_model_config_text()
+        return {"content": content, "backups": _get_backups(target)}
 
     @api_router.put("/config")
     async def api_config_update(req: Request):
@@ -2783,40 +2844,72 @@ def _mount_admin():
             raise HTTPException(status_code=400, detail="请求格式错误")
 
         content = body.get("content", "")
-        try:
-            if content.strip():
-                yaml.safe_load(content)
-        except yaml.YAMLError as e:
-            raise HTTPException(status_code=400, detail=f"YAML 格式错误: {e}")
+        target = body.get("target", "bot")
+        config_file = _config_file_for(target)
+        if not isinstance(content, str):
+            raise HTTPException(status_code=400, detail="配置内容必须是字符串")
+        if target == "ai-models":
+            try:
+                parse_ai_model_config(content)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
+        else:
+            try:
+                if content.strip():
+                    yaml.safe_load(content)
+            except yaml.YAMLError as e:
+                raise HTTPException(status_code=400, detail=f"YAML 格式错误: {e}")
 
-        _create_backup()
-        CONFIG_FILE.write_text(content, encoding="utf-8")
+        _create_backup(target)
+        config_file.write_text(content, encoding="utf-8")
 
-        if _HAS_CONFIG_MANAGER and _config_manager is not None:
+        if target == "bot":
+            try:
+                migrate_legacy_ai_config()
+            except (OSError, ValueError, yaml.YAMLError) as e:
+                raise HTTPException(status_code=500, detail=f"迁移旧版 AI 模型配置失败: {e}") from e
+
+        if target == "bot" and _HAS_CONFIG_MANAGER and _config_manager is not None:
             try:
                 _config_manager.reload()
                 logger.success("[WebUI] 主配置已热更新")
             except Exception as e:
                 logger.warning(f"[WebUI] 热更新 config_manager 失败: {e}")
+        elif target == "ai-models":
+            logger.success("[WebUI] 全局 AI 模型配置已热更新")
 
         return {"success": True}
 
     @api_router.post("/config/backup/{timestamp}/restore")
-    async def api_config_restore(timestamp: str, req: Request):
+    async def api_config_restore(timestamp: str, req: Request, target: str = "bot"):
         _require_auth(req)
-        backup_path = BACKUP_DIR / f"bot.yaml.{timestamp}"
+        config_file = _config_file_for(target)
+        backup_path = BACKUP_DIR / f"{config_file.name}.{timestamp}"
         if not backup_path.exists():
             raise HTTPException(status_code=404, detail="备份不存在")
 
-        _create_backup()
-        shutil.copy2(backup_path, CONFIG_FILE)
+        if target == "ai-models":
+            try:
+                parse_ai_model_config(backup_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as e:
+                raise HTTPException(status_code=400, detail=f"AI 模型配置备份无效: {e}") from e
+        _create_backup(target)
+        shutil.copy2(backup_path, config_file)
 
-        if _HAS_CONFIG_MANAGER and _config_manager is not None:
+        if target == "bot":
+            try:
+                migrate_legacy_ai_config()
+            except (OSError, ValueError, yaml.YAMLError) as e:
+                raise HTTPException(status_code=500, detail=f"迁移旧版 AI 模型配置失败: {e}") from e
+
+        if target == "bot" and _HAS_CONFIG_MANAGER and _config_manager is not None:
             try:
                 _config_manager.reload()
                 logger.success(f"[WebUI] 已从备份恢复并热更新配置（{timestamp}）")
             except Exception as e:
                 logger.warning(f"[WebUI] 热更新 config_manager 失败: {e}")
+        elif target == "ai-models":
+            logger.success(f"[WebUI] 已恢复全局 AI 模型配置（{timestamp}）")
 
         return {"success": True}
 
