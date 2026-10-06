@@ -482,6 +482,9 @@ async function loadPluginConfig(pluginName) {
             const filteredItems = currentItems
                 .map(function(item, originalIdx) { return { item: item, originalIdx: originalIdx }; })
                 .filter(function(x) { return x.item.key !== "enabled"; });
+            filteredItems.sort(function(a, b) {
+                return Number(Boolean(b.item.is_ai_platforms)) - Number(Boolean(a.item.is_ai_platforms));
+            });
 
             let formHtml = '';
             for (let idx = 0; idx < filteredItems.length; idx++) {
@@ -499,8 +502,9 @@ async function loadPluginConfig(pluginName) {
                                 '<button type="button" onclick="addAiPlatform(' + originalIdx + ')" style="padding:8px 14px;border:0;border-radius:6px;background:linear-gradient(135deg,#2BA89E,#3A6E8E);color:#fff;cursor:pointer;">＋ 添加AI</button>' +
                             '</div>' +
                             '<div id="ai-platform-list-' + originalIdx + '" style="margin-top:8px;"></div>' +
-                            hint +
-                        '</div>';
+                                    (hint || '') +
+                                    '<div style="margin-top:6px;font-size:12px;color:#999;">拖动平台左侧把手可调整顺序，排序会自动保存。</div>' +
+                                '</div>';
                 } else if (isList) {
                     formHtml += 
                         '<div style="display:flex;gap:16px;padding:14px 0;border-bottom:1px solid #eee;">' +
@@ -552,11 +556,65 @@ function renderAiPlatformList(itemIndex) {
     }
     list.innerHTML = currentAiPlatforms.map(function(platform, index) {
         const name = String(platform.name || "").trim() || "未命名AI";
-        return '<button type="button" onclick="openAiPlatformEditor(' + itemIndex + ',' + index + ')" ' +
-            'style="display:block;width:100%;text-align:left;padding:12px 14px;margin:8px 0;border:1px solid #ddd;border-radius:8px;background:#fff;cursor:pointer;">' +
-            '<span style="font-weight:600;">' + _escapeHtml(name) + '</span>' +
-            '<span style="float:right;color:#888;">配置 ›</span></button>';
+        return '<div data-platform-index="' + index + '" style="display:flex;align-items:center;gap:10px;padding:4px 8px;margin:8px 0;border:1px solid #ddd;border-radius:8px;background:#fff;">' +
+            '<span draggable="true" title="拖动调整顺序" aria-label="拖动调整顺序" style="padding:6px;color:#888;cursor:grab;user-select:none;">⠿</span>' +
+            '<button type="button" onclick="openAiPlatformEditor(' + itemIndex + ',' + index + ')" ' +
+                'style="flex:1;text-align:left;padding:8px 4px;border:0;background:transparent;cursor:pointer;">' +
+                '<span style="font-weight:600;">' + _escapeHtml(name) + '</span>' +
+                '<span style="float:right;color:#888;">配置 ›</span></button></div>';
     }).join("");
+
+    let draggedIndex = null;
+    list.ondragstart = function(event) {
+        const handle = event.target.closest("[draggable='true']");
+        const row = handle && handle.closest("[data-platform-index]");
+        if (!row) return;
+        draggedIndex = Number(row.dataset.platformIndex);
+        row.style.opacity = "0.45";
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", String(draggedIndex));
+    };
+    list.ondragend = function() {
+        draggedIndex = null;
+        list.querySelectorAll("[data-platform-index]").forEach(function(row) {
+            row.style.opacity = "";
+            row.style.borderColor = "#ddd";
+        });
+    };
+    list.ondragover = function(event) {
+        const row = event.target.closest("[data-platform-index]");
+        if (!row || Number(row.dataset.platformIndex) === draggedIndex) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        row.style.borderColor = "#2BA89E";
+    };
+    list.ondragleave = function(event) {
+        const row = event.target.closest("[data-platform-index]");
+        if (row && !row.contains(event.relatedTarget)) row.style.borderColor = "#ddd";
+    };
+    list.ondrop = async function(event) {
+        const row = event.target.closest("[data-platform-index]");
+        if (!row || draggedIndex === null || Number(row.dataset.platformIndex) === draggedIndex) return;
+        event.preventDefault();
+        const fromIndex = draggedIndex;
+        const targetIndex = Number(row.dataset.platformIndex);
+        const insertBefore = event.clientY < row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2;
+        const reordered = currentAiPlatforms.slice();
+        const moved = reordered.splice(fromIndex, 1)[0];
+        let insertIndex = targetIndex;
+        if (fromIndex < targetIndex) insertIndex--;
+        if (!insertBefore) insertIndex++;
+        reordered.splice(insertIndex, 0, moved);
+        if (reordered.every(function(platform, index) { return platform === currentAiPlatforms[index]; })) return;
+        try {
+            await saveAiPlatforms(reordered);
+            renderAiPlatformList(itemIndex);
+            Toast.success("AI平台顺序已保存");
+        } catch (e) {
+            renderAiPlatformList(itemIndex);
+            Toast.error("调整AI平台顺序失败: " + e.message);
+        }
+    };
 }
 
 async function saveAiPlatforms(platforms) {

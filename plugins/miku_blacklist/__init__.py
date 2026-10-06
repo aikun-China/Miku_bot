@@ -6,7 +6,7 @@ MikuBot 黑名单拦截插件
 1. 用户/群组黑名单（静默丢弃）：
    - user_disabled: {qq号: []}        → 该用户的所有消息被静默忽略
    - group_disabled: {群号: []}        → 该群的所有消息被静默忽略
-   - global_disabled: []               → 若包含 "__all__"，所有非超级用户消息被静默忽略
+   - global_disabled: []               → 若包含 "__all__"，所有用户消息被静默忽略
 
 2. 插件级禁用（按消息意图拦截）：
    - global_disabled: ["miku_ai", ...]  → 禁用指定插件的命令
@@ -17,16 +17,19 @@ MikuBot 黑名单拦截插件
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 
 from typing import Optional
 from nonebot import on_message, logger
+from nonebot.message import run_preprocessor
+from nonebot.matcher import Matcher
 from nonebot.rule import Rule
 from nonebot.adapters.onebot.v11 import (
     Bot, MessageEvent, GroupMessageEvent, PrivateMessageEvent,
 )
-from nonebot.exception import FinishedException
+from nonebot.exception import FinishedException, IgnoredException
 from nonebot.plugin import PluginMetadata
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -69,7 +72,7 @@ def _is_enabled() -> bool:
     raw = config_manager.get("miku_blacklist", "enabled", True)
     return str(raw).strip().lower() not in ("false", "0", "no", "")
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parents[2]
 BLACKLIST_FILE = BASE_DIR / "data" / "blacklist.json"
 
 
@@ -123,9 +126,49 @@ PLUGIN_KEYWORDS = {
         "通知管理员", "对管理员说", "告诉管理员",
         "跟管理员说", "转告管理员", "有事找管理员",
     ],
+    # B站命令；被动解析的链接和内容 ID 由 _is_bilibili_intent 识别
+    "miku_bilibili": [
+        "bili下载", "b站下载", "bilibili下载",
+        "bili封面", "b站封面", "bilibili封面", "封面",
+        "bili登录", "b站登录", "bilibili登录",
+        "bili状态", "b站状态", "bilibili状态",
+        "bili退出登录", "b站退出登录",
+        "b站凭证", "bili凭证", "bilibili凭证",
+        "bili设置cookie", "b站设置cookie", "b站cookie", "bili_cookie",
+        "开启群被动b站解析", "关闭群被动b站解析",
+        "开启b站解析", "关闭b站解析",
+        "bili启停", "b站启停", "bilibili启停",
+        "b站订阅添加", "b站订阅删除", "b站订阅列表", "b站订阅",
+        "b站订阅设置", "b站订阅清空",
+        "bili订阅添加", "bili订阅删除", "bili订阅列表",
+        "bili订阅设置", "bili订阅清空",
+        "bili检查全部", "b站检查全部", "检测b站",
+        "查成分",
+    ],
     # 缓存清理（管理型，无用户命令）
     # miku_blacklist：自身无用户命令
 }
+
+_BILIBILI_INTENT_PATTERNS = (
+    re.compile(r"https?://b23\.tv/[a-z0-9]+", re.I),
+    re.compile(r"https?://(?:www\.|m\.)?bilibili\.com/video/(?:BV[a-z0-9]{10}|av\d+)", re.I),
+    re.compile(r"(?<![a-z0-9])BV[a-z0-9]{10}(?![a-z0-9])", re.I),
+    re.compile(r"(?<![a-z0-9])av\d{3,12}(?![a-z0-9])", re.I),
+    re.compile(r"https?://live\.bilibili\.com/\d+", re.I),
+    re.compile(r"(?<![a-z0-9])live\.bilibili\.com/\d+", re.I),
+    re.compile(r"https?://(?:www\.|m\.)?bilibili\.com/read/cv\d+", re.I),
+    re.compile(r"(?<![a-z0-9])cv\d+(?![a-z0-9])", re.I),
+    re.compile(r"https?://(?:www\.|m\.)?bilibili\.com/bangumi/play/(?:ss\d+|ep\d+)", re.I),
+    re.compile(r"(?<![a-z0-9])(?:ss|ep)\d{1,8}(?![a-z0-9])", re.I),
+    re.compile(r"https?://space\.bilibili\.com/\d+", re.I),
+    re.compile(r"(?<![a-z0-9])space\.bilibili\.com/\d+", re.I),
+    re.compile(r"https?://(?:www\.bilibili\.com/opus/|t\.bilibili\.com/)\d+", re.I),
+)
+
+
+def _is_bilibili_intent(text: str) -> bool:
+    """匹配被动解析器支持的 B 站链接和内容 ID。"""
+    return any(pattern.search(text) for pattern in _BILIBILI_INTENT_PATTERNS)
 
 
 def _load_blacklist() -> dict:
@@ -185,6 +228,8 @@ def _match_disabled_plugin(text: str, disabled: dict) -> Optional[str]:
                 continue
             if stripped_lower.startswith(kw.lower()):
                 return plugin_name
+        if plugin_name == "miku_bilibili" and _is_bilibili_intent(stripped):
+            return plugin_name
 
     # 特别处理 miku_ai（AI 对话）：普通聊天文本也属于它
     if "miku_ai" in disabled:
@@ -231,7 +276,7 @@ def _check_blacklist(event: MessageEvent) -> bool:
     优先级（先命中先处理）：
     1) 用户在 user_disabled 中（含空列表）→ 静默忽略所有消息
     2) 群组在 group_disabled 中（含空列表）→ 静默忽略所有消息
-    3) global_disabled 含 "__all__" → 静默忽略所有非超级用户消息
+    3) global_disabled 含 "__all__" → 静默忽略所有用户消息
     4) 插件级禁用（global/group/user_disabled 中的插件名）→ 拦截该插件命令
     """
     # 1. 本插件开关
@@ -261,9 +306,8 @@ def _check_blacklist(event: MessageEvent) -> bool:
     # __all__ 完全禁用（特殊关键词，标记并拦截所有消息）
     global_list = bl.get("global_disabled", [])
     if "__all__" in global_list:
-        if user_id not in config_manager.superusers:
-            event.__dict__["_blocked_plugin"] = "__all__"
-            return True
+        event.__dict__["_blocked_plugin"] = "__all__"
+        return True
 
     # ── 插件级禁用层 ────────────────────────────────────────
     text = _extract_text(event)
@@ -295,6 +339,34 @@ def _check_blacklist(event: MessageEvent) -> bool:
     return False
 
 
+@run_preprocessor
+async def _check_disabled_plugin_matcher(matcher: Matcher, event: MessageEvent):
+    """在目标插件的 matcher 执行前按插件名检查黑名单。"""
+    if not _is_enabled():
+        return
+
+    user_id = str(event.get_user_id())
+    plugin_name = matcher.plugin_name
+    if not plugin_name or plugin_name == "miku_blacklist":
+        return
+
+    bl = _load_blacklist()
+    disabled_plugins = bl.get("global_disabled", [])
+
+    if isinstance(event, GroupMessageEvent):
+        group_plugins = bl.get("group_disabled", {}).get(str(event.group_id), [])
+        if isinstance(group_plugins, list):
+            disabled_plugins = [*disabled_plugins, *group_plugins]
+
+    user_plugins = bl.get("user_disabled", {}).get(user_id)
+    if isinstance(user_plugins, list):
+        disabled_plugins = [*disabled_plugins, *user_plugins]
+
+    if plugin_name in disabled_plugins:
+        logger.debug(f"[黑名单] 拦截插件 {plugin_name} 的 matcher: {user_id}")
+        raise IgnoredException(f"插件 {plugin_name} 已被黑名单禁用")
+
+
 block_handler = on_message(priority=1, block=True, rule=Rule(_check_blacklist))
 
 
@@ -305,19 +377,13 @@ async def handle_block(bot: Bot, event: MessageEvent):
 
     - 用户/群组黑名单：完全不记录日志，直接静默忽略
     - 插件级禁用：记录 debug 日志，静默丢弃
-    - 超级用户不受任何黑名单限制
     """
-    # 超级用户永远不受限制
-    user_id = str(event.get_user_id())
-    if user_id in config_manager.superusers:
-        return
-
     # 命中原因：插件级禁用才设置 _blocked_plugin
     matched_plugin = event.__dict__.get("_blocked_plugin")
 
     if matched_plugin:
         # 插件级禁用：记录 debug 日志，静默丢弃
-        logger.debug(f"[黑名单] 拦截插件 {matched_plugin} 的消息: {event.get_user_id()}")
+        logger.debug(f"[黑名单] 拦截规则 {matched_plugin} 的消息: {event.get_user_id()}")
     # else: 用户/群组黑名单，直接静默忽略，不打印任何日志
 
     raise FinishedException()
