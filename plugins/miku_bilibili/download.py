@@ -386,7 +386,7 @@ async def auto_download_video(bvid: str, page: int = 1) -> Optional[str]:
     key = f"{bvid}_P{page}"
     existing = _inflight_downloads.get(key)
     if existing is not None and not existing.done():
-        logger.info(f"[miku_bilibili] BV{bvid} P{page} 正在下载中，等待复用进行中的下载结果")
+        logger.info(f"[miku_bilibili] {bvid} P{page} 正在下载中，等待复用进行中的下载结果")
         try:
             return await existing
         except Exception:
@@ -412,7 +412,7 @@ async def _auto_download_video_impl(bvid: str, page: int = 1) -> Optional[str]:
     logger.info(f"[miku_bilibili] 任务: 自动下载视频, 等待信号量... (BV={bvid}, P{page})")
 
     async with _auto_download_semaphore:
-        logger.info(f"[miku_bilibili] 信号量已获取，开始处理任务: 自动下载 BV{bvid} P{page}")
+        logger.info(f"[miku_bilibili] 信号量已获取，开始处理任务: 自动下载 {bvid} P{page}")
 
         try:
             info = await fetch_video_info(bvid)
@@ -430,11 +430,11 @@ async def _auto_download_video_impl(bvid: str, page: int = 1) -> Optional[str]:
 
             video_url, audio_url, quality_desc = await get_download_url(bvid)
             if not video_url:
-                logger.warning(f"[miku_bilibili] 自动下载：原生链接获取失败，尝试 yt-dlp BV{bvid}")
+                logger.warning(f"[miku_bilibili] 自动下载：原生链接获取失败，尝试 yt-dlp {bvid}")
                 ytdlp_result = await _ytdlp_auto_download(bvid, page)
                 if ytdlp_result:
                     return ytdlp_result
-                logger.warning(f"[miku_bilibili] 自动下载失败：yt-dlp 也无法下载 BV{bvid}")
+                logger.warning(f"[miku_bilibili] 自动下载失败：yt-dlp 也无法下载 {bvid}")
                 return None
 
             login_status = "已登录" if is_logged_in() else "未登录"
@@ -453,7 +453,7 @@ async def _auto_download_video_impl(bvid: str, page: int = 1) -> Optional[str]:
                 v_ok, a_ok = await asyncio.gather(v_task, a_task)
 
                 if not v_ok:
-                    logger.error(f"[miku_bilibili] 视频流下载失败 BV{bvid}")
+                    logger.error(f"[miku_bilibili] 视频流下载失败 {bvid}")
                     return None
 
                 if a_ok and await _has_ffmpeg():
@@ -465,14 +465,14 @@ async def _auto_download_video_impl(bvid: str, page: int = 1) -> Optional[str]:
                         except Exception:
                             pass
                     if not success:
-                        logger.warning(f"[miku_bilibili] 合并失败，重命名纯视频 BV{bvid}")
+                        logger.warning(f"[miku_bilibili] 合并失败，重命名纯视频 {bvid}")
                         video_tmp.rename(cache_path)
                     else:
                         logger.info(f"[miku_bilibili] 媒体文件处理成功: {cache_path.name}")
                         logger.info(f"[miku_bilibili] 视频处理成功: {cache_path.name}")
                 else:
                     if not a_ok:
-                        logger.warning(f"[miku_bilibili] 音频下载失败，仅保存视频 BV{bvid}")
+                        logger.warning(f"[miku_bilibili] 音频下载失败，仅保存视频 {bvid}")
                     video_tmp.rename(cache_path)
                     try:
                         audio_tmp.unlink()
@@ -484,7 +484,7 @@ async def _auto_download_video_impl(bvid: str, page: int = 1) -> Optional[str]:
                 logger.info(f"[miku_bilibili] 开始下载文件: {cache_path.name} (使用 AsyncHttpx)")
                 success = await download_video_file(video_url, cache_path)
                 if not success:
-                    logger.error(f"[miku_bilibili] MP4下载失败 BV{bvid}")
+                    logger.error(f"[miku_bilibili] MP4下载失败 {bvid}")
                     return None
 
             if cache_path.exists() and cache_path.stat().st_size > 0:
@@ -494,15 +494,39 @@ async def _auto_download_video_impl(bvid: str, page: int = 1) -> Optional[str]:
             return None
 
         except Exception as e:
-            logger.error(f"[miku_bilibili] 自动下载异常 BV{bvid}: {e}", exc_info=True)
+            logger.error(f"[miku_bilibili] 自动下载异常 {bvid}: {e}", exc_info=True)
             # 回退到 yt-dlp
-            logger.info(f"[miku_bilibili] 回退到 yt-dlp 自动下载 BV{bvid}")
+            logger.info(f"[miku_bilibili] 回退到 yt-dlp 自动下载 {bvid}")
             return await _ytdlp_auto_download(bvid, page)
 
 
 # ============================================================
 # yt-dlp 备用下载引擎
 # ============================================================
+
+def _build_bilibili_ytdlp_format(max_height: int) -> str:
+    """按目标清晰度选择横屏或竖屏视频流，并与音频流合并。"""
+    if max_height <= 0:
+        return "bestvideo+bestaudio/best"
+
+    choices = []
+    dimensions = ("height", "width")
+    for dimension in dimensions:
+        choices.append(
+            f"bestvideo[{dimension}<={max_height}][vcodec^=avc1]"
+            "+bestaudio[acodec^=mp4a]"
+        )
+    for dimension in dimensions:
+        choices.append(
+            f"bestvideo[{dimension}<={max_height}]+bestaudio"
+        )
+    choices.extend((
+        f"best[height<={max_height}]",
+        f"best[width<={max_height}]",
+        "best",
+    ))
+    return "/".join(choices)
+
 
 # yt-dlp Netscape Cookie 文件缓存路径
 _YTDLP_COOKIE_FILE = DATA_DIR / "ytdlp_bili_cookies.txt"
@@ -591,6 +615,7 @@ async def _ytdlp_download_bili(
         outtmpl=f"{bvid}_%(title).50s.%(ext)s",
         merge=True,
         output_format="mp4",
+        extra_params={"format": _build_bilibili_ytdlp_format(max_height)},
         timeout=300,
         retries=3,
     )
@@ -660,6 +685,7 @@ async def _ytdlp_auto_download(bvid: str, page: int = 1) -> Optional[str]:
         outtmpl=f"{bvid}_P{page}.%(ext)s",
         merge=True,
         output_format="mp4",
+        extra_params={"format": _build_bilibili_ytdlp_format(max_height)},
         timeout=300,
         retries=2,
     )

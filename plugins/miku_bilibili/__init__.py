@@ -80,7 +80,15 @@ from .subscription import (
     list_subscriptions, update_sub_config, check_all_subscriptions,
     force_push_subscription,
 )
-from .ddcheck import ddcheck_cmd
+from .ddcheck import (
+    ddcheck_cmd,
+    get_uid as ddcheck_get_uid,
+    get_user_name as ddcheck_get_user_name,
+    get_following as ddcheck_get_following,
+    get_vtb_list as ddcheck_get_vtb_list,
+    compute_component as ddcheck_compute_component,
+    render_component_image as ddcheck_render_component_image,
+)
 
 
 __plugin_meta__ = PluginMetadata(
@@ -1265,6 +1273,197 @@ async def _checkall_handler(bot: Bot, event: MessageEvent):
     await checkall_cmd.send("⏳ 开始检查所有订阅...")
     await check_all_subscriptions()
     await checkall_cmd.finish("✅ 订阅检查完成！")
+
+
+# ============================================================
+# AI 动作注册（把已有能力暴露给 miku_ai 路由层，不改变原有 matcher 行为）
+# ============================================================
+
+try:
+    from utils.ai_actions import register_ai_action, ActionContext
+except ImportError:  # 动作注册中心不可用时静默降级
+    register_ai_action = None
+    ActionContext = object  # type: ignore[assignment,misc]
+
+# 「封面」命令（priority=10, block=True，别名含「封面」）会吃掉所有以
+# 「封面」开头、以及消息里带 B站链接/BV号的场合（priority=9 的被动解析会先
+# stop_propagation）。所以这里的 patterns 只匹配「命令 + 被动解析都覆盖不到」
+# 的自然语言，绝不与现有 matcher 重复执行。
+_BILI_COVER_PATTERNS = [
+    # 帮我拿一下这个视频的封面 / 帮我取一下封面 BV1xx411c7mD / 要一张封面
+    r"^(?:帮我|帮忙|麻烦你?|请)?\s*(?:拿|取|发|要|来|弄|找|下载)(?:一下|下|一张)?\s*"
+    r"(?:这个|这|那个|该)?\s*(?:视频|b站视频|哔哩哔哩视频)?\s*(?:的)?\s*封面(?:图)?"
+    r"\s*(?P<target>(?:https?://\S+|b23\.tv/\S+|BV[0-9A-Za-z]{10}|av\d{3,12}))?$",
+    # 这个视频的封面 / 视频的封面 BV1xx411c7mD
+    r"^(?:这个|这|那个)?\s*(?:视频|b站视频|哔哩哔哩视频)\s*的\s*封面(?:图)?"
+    r"\s*(?P<target>(?:https?://\S+|b23\.tv/\S+|BV[0-9A-Za-z]{10}|av\d{3,12}))?$",
+]
+
+# 「查成分」命令（priority=10, block=True，别名含「成分」）以命令词开头，
+# 这里的 patterns 只匹配不以命令词开头的自然说法。
+_BILI_DDGCHECK_PATTERNS = [
+    # 看看某UP主的成分 / 帮我看看xx的VTuber成分
+    r"^(?:帮我|帮忙|麻烦)?\s*(?:看看|看一下|瞧瞧|瞅瞅|查查|查一下)\s*(?P<name>.+?)\s*的\s*"
+    r"(?:vtb|vtuber|虚拟主播)?\s*成分\s*(?:是啥|是什么|有哪些|怎么样|如何)?[?？]?$",
+    # 某UP主的成分有哪些 / 123456的成分
+    r"^(?P<name>.+?)\s*的\s*(?:vtb|vtuber|虚拟主播)?\s*成分\s*"
+    r"(?:是啥|是什么|有哪些|怎么样|如何|分析|报告)?[?？]?$",
+    # 查成分 某UP主 / 帮我查一下他的vtuber成分 某UP主（命令同款说法）
+    r"^(?:帮我|帮忙|麻烦)?\s*(?:查|看|看看|查查|查验|分析)\s*(?:一下|下)?\s*(?:他的|她的)?\s*"
+    r"(?:vtb|vtuber|虚拟主播)?\s*成分\s*[:：,，、\s]*(?P<name>.+)$",
+    # 看成分：某UP主 / 查成分 某UP主
+    r"^(?:查|看)\s*成分\s*[:：,，、\s]*(?P<name>.+)$",
+]
+
+# 「查成分」命令与路由层（都挂在 priority=10）在同一优先级批次里并发执行，
+# 命令说法本身已经由 ddcheck_cmd 回答，这里让路，避免重复查询、重复发图。
+_DDGCHECK_COMMAND_PREFIXES = ("查成分", "查成分姬", "ddcheck", "成分")
+
+
+async def _ai_bili_cover(ctx: ActionContext) -> dict:
+    """AI 动作：获取B站视频封面（复用「bili封面」命令的取封面逻辑）。"""
+    if not is_enabled():
+        return {"status": "skip"}
+
+    target = ctx.arg_str("target")
+    if target:
+        bvid = extract_video_id(target)
+        if not bvid:
+            # 说的不是视频链接/BV号，交回普通聊天，避免误判
+            return {"status": "skip"}
+    else:
+        # 支持引用消息：复用命令里的引用解析
+        bvid = extract_video_id(await _extract_url_from_event(ctx.event))
+        if not bvid:
+            return {"status": "ask", "question": "发我视频链接或BV号就行～"}
+
+    try:
+        _, resource_id = await parse_url(bvid)
+        bvid = resource_id
+    except Exception:
+        pass
+
+    try:
+        info = await fetch_video_info(bvid)
+        cover_data = await get_video_cover_data(bvid)
+    except Exception as e:
+        logger.warning(f"[miku_bilibili] AI 动作获取封面失败: {type(e).__name__}: {e}")
+        return {"status": "error", "reply": f"❌ 封面获取失败: {e}"}
+
+    if not cover_data:
+        return {"status": "error", "reply": "❌ 封面获取失败"}
+
+    record_plugin_usage("miku_bilibili", user_id=ctx.user_id, command_name="封面获取")
+    await ctx.emit(f"📷 {info.title}\n{MessageSegment.image(cover_data)}")
+    return {"status": "ok"}
+
+
+async def _ai_bili_ddgcheck(ctx: ActionContext) -> dict:
+    """AI 动作：VTuber 成分查询（复用 ddcheck 子模块的查询/渲染逻辑）。"""
+    if not is_enabled():
+        return {"status": "skip"}
+
+    keyword = ctx.arg_str("name")
+    if not keyword:
+        return {"status": "skip"}
+
+    # 命令说法（查成分/成分/ddcheck…）由 ddcheck_cmd 回答，这里让路避免重复
+    if (ctx.text or "").strip().lower().startswith(_DDGCHECK_COMMAND_PREFIXES):
+        return {"status": "skip"}
+
+    is_login, _ = await check_login_status()
+    if not is_login:
+        return {
+            "status": "error",
+            "reply": "❌ 尚未获取B站凭证，无法查询成分\n"
+                     "请先发送 `b站登录` 扫码获取凭证（一次扫码，永久复用）",
+        }
+
+    await ctx.emit("⏳ 正在查询成分，请稍候...")
+
+    uid = await ddcheck_get_uid(keyword)
+    if not uid:
+        return {"status": "error", "reply": f"❌ 未找到用户「{keyword}」，请检查名称或直接使用 UID"}
+
+    user_name_task = asyncio.ensure_future(ddcheck_get_user_name(uid))
+    following = await ddcheck_get_following(uid)
+    user_name = await user_name_task
+
+    if not following:
+        return {
+            "status": "error",
+            "reply": f"⚠️ 未能获取到 {user_name}（UID:{uid}）的关注列表\n"
+                     f"可能是隐私设置或凭证权限不足，请重试",
+        }
+
+    vtb_list = await ddcheck_get_vtb_list()
+    component = ddcheck_compute_component(following, vtb_list)
+    if not component:
+        return {
+            "status": "error",
+            "reply": f"🔍 {user_name}（UID:{uid}）的关注中没有匹配到 VTB 成分",
+        }
+
+    record_plugin_usage("miku_bilibili", user_id=ctx.user_id, command_name="查成分")
+    try:
+        img_path = ddcheck_render_component_image(user_name, uid, component)
+        await ctx.emit(MessageSegment.image(to_image_uri(str(img_path))))
+        await ctx.emit(
+            f"✅ {user_name} 的成分：共关注 {len(following)} 人，"
+            f"匹配 {sum(c['count'] for c in component)} 位 VTuber"
+        )
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"[miku_bilibili] AI 动作渲染成分图片失败: {e}", exc_info=True)
+        lines = [f"{user_name}（UID:{uid}）的成分："]
+        for row in component:
+            lines.append(f"  {row['name']}: {row['count']} ({row['percent']}%)")
+        await ctx.emit("\n".join(lines))
+        return {"status": "ok"}
+
+
+if register_ai_action is not None:
+    register_ai_action(
+        "bili.cover",
+        plugin="miku_bilibili",
+        plugin_display="B站解析",
+        description="获取B站视频封面（给视频链接/BV号，或引用一条视频消息）",
+        handler=_ai_bili_cover,
+        params={
+            "target": {
+                "type": "string",
+                "required": False,
+                "desc": "B站视频链接或BV号",
+                "max_len": 120,
+            },
+        },
+        examples=["帮我拿一下这个视频的封面", "这个视频的封面 BV1xx411c7mD"],
+        patterns=_BILI_COVER_PATTERNS,
+        keywords=["封面"],
+        mode="action",
+        order=31,
+    )
+    register_ai_action(
+        "bili.ddgcheck",
+        plugin="miku_bilibili",
+        plugin_display="B站解析",
+        description="查询某个B站用户的VTuber成分（B站用户名或UID）",
+        handler=_ai_bili_ddgcheck,
+        params={
+            "name": {
+                "type": "string",
+                "required": True,
+                "desc": "B站用户名或UID",
+                "max_len": 60,
+                "ask": "想查谁呢？发我B站用户名或UID就行～",
+            },
+        },
+        examples=["看看某UP主的成分", "某UP主的成分有哪些"],
+        patterns=_BILI_DDGCHECK_PATTERNS,
+        keywords=["成分", "vtb成分", "vtuber成分"],
+        mode="action",
+        order=32,
+    )
 
 
 # ============================================================

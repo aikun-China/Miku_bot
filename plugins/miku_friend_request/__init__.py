@@ -4,6 +4,8 @@ Miku 好友/群请求管理插件
 - 自动接收好友请求、加群请求、群邀请
 - 管理员可查看请求列表（带序号）
 - 管理员可按序号同意/拒绝
+- 同意或拒绝后自动从请求列表移除
+- 无待处理请求时序号重置，过期请求每 5 分钟自动清理
 - 同意后默认开启免打扰（兼容主流 OneBot 实现）
 - 群邀请会显示邀请者信息
 - 群禁言检测：bot被禁言后通知超级用户，支持退群
@@ -17,7 +19,7 @@ Miku 好友/群请求管理插件
   退群 <群号>
 """
 
-from nonebot import on_command, on_request, on_notice
+from nonebot import get_driver, on_command, on_request, on_notice
 from nonebot.adapters.onebot.v11 import (
     Bot,
     MessageEvent,
@@ -97,6 +99,10 @@ def _conf(key: str, default=None):
     return config_manager.get("miku_friend_request", key, default)
 
 
+def _is_already_approved_error(error: Exception) -> bool:
+    return "already agree msg by self" in str(error).casefold()
+
+
 # ============================================================
 # 请求数据持久化
 # ============================================================
@@ -118,6 +124,7 @@ def _save_requests(data: dict):
 
 def _add_request(req: dict):
     data = _load_requests()
+    _cleanup_request_data(data)
     data["counter"] = data.get("counter", 0) + 1
     req["id"] = data["counter"]
     req["time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -129,45 +136,93 @@ def _add_request(req: dict):
 
 def _get_request_by_id(req_id: int) -> dict | None:
     data = _load_requests()
+    if _cleanup_request_data(data):
+        _save_requests(data)
     for req in data.get("requests", []):
         if req.get("id") == req_id and not req.get("handled"):
             return req
     return None
 
 
-def _mark_handled(req_id: int, action: str):
+def _remove_request(req_id: int):
     data = _load_requests()
-    for req in data.get("requests", []):
-        if req.get("id") == req_id:
-            req["handled"] = True
-            req["action"] = action
-            req["handle_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            break
+    data["requests"] = [
+        req for req in data.get("requests", []) if req.get("id") != req_id
+    ]
+    if not data["requests"]:
+        data["counter"] = 0
     _save_requests(data)
 
 
-def _get_pending_requests() -> list:
-    data = _load_requests()
+def _cleanup_request_data(data: dict) -> bool:
     expire_hours = int(_conf("expire_hours", 48))
-    pending = []
     now = datetime.now()
+    kept = []
     for req in data.get("requests", []):
         if req.get("handled"):
             continue
-        # 过期检查
         if expire_hours > 0:
             try:
                 req_time = datetime.strptime(req.get("time", ""), "%Y-%m-%d %H:%M:%S")
                 if (now - req_time).total_seconds() > expire_hours * 3600:
-                    req["handled"] = True
-                    req["action"] = "expired"
                     continue
-            except Exception:
+            except (TypeError, ValueError):
                 pass
-        pending.append(req)
-    # 保存过期标记
+        kept.append(req)
+
+    changed = len(kept) != len(data.get("requests", []))
+    data["requests"] = kept
+    if not kept and data.get("counter", 0) != 0:
+        data["counter"] = 0
+        changed = True
+    return changed
+
+
+def _get_pending_requests() -> list:
+    data = _load_requests()
+    _cleanup_request_data(data)
     _save_requests(data)
-    return pending
+    return data["requests"]
+
+
+_request_cleanup_scheduler = None
+
+
+@get_driver().on_startup
+async def _start_request_cleanup():
+    global _request_cleanup_scheduler
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    _request_cleanup_scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
+    _request_cleanup_scheduler.add_job(
+        _cleanup_expired_requests,
+        trigger=IntervalTrigger(minutes=5),
+        id="miku_friend_request_cleanup",
+        max_instances=1,
+        coalesce=True,
+    )
+    _request_cleanup_scheduler.start()
+    _cleanup_expired_requests()
+    logger.info("[请求管理] 过期请求自动清理已启动（每 5 分钟检查）")
+
+
+@get_driver().on_shutdown
+async def _stop_request_cleanup():
+    global _request_cleanup_scheduler
+    if _request_cleanup_scheduler and _request_cleanup_scheduler.running:
+        _request_cleanup_scheduler.shutdown(wait=False)
+    _request_cleanup_scheduler = None
+
+
+def _cleanup_expired_requests():
+    data = _load_requests()
+    before = len(data.get("requests", []))
+    changed = _cleanup_request_data(data)
+    if changed:
+        _save_requests(data)
+        removed = before - len(data["requests"])
+        logger.info(f"[请求管理] 自动清理了 {removed} 条已处理或过期请求")
 
 
 # ============================================================
@@ -530,7 +585,7 @@ async def handle_approve(bot: Bot, event: MessageEvent, args: Message = CommandA
             await bot.set_friend_add_request(
                 flag=req["flag"], approve=True
             )
-            _mark_handled(req_id, "approve")
+            _remove_request(req_id)
             success_msg = f"✅ 已同意好友请求 [{req_id}]（QQ：{req.get('user_id')}）"
         else:
             await bot.set_group_add_request(
@@ -538,7 +593,7 @@ async def handle_approve(bot: Bot, event: MessageEvent, args: Message = CommandA
                 sub_type=req.get("sub_type", "add"),
                 approve=True,
             )
-            _mark_handled(req_id, "approve")
+            _remove_request(req_id)
 
             # 自动免打扰（仅针对群邀请/加群，且是 bot 加入的群）
             if _conf("auto_dnd", True):
@@ -550,6 +605,11 @@ async def handle_approve(bot: Bot, event: MessageEvent, args: Message = CommandA
             group_name = req.get("group_name", req.get("group_id"))
             success_msg = f"✅ 已同意群请求 [{req_id}]（群：{group_name}）"
     except Exception as e:
+        if _is_already_approved_error(e):
+            _remove_request(req_id)
+            logger.info(f"[请求管理] 请求 [{req_id}] 已在 QQ 侧同意，同步本地状态")
+            await approve_cmd.finish(f"✅ 请求 [{req_id}] 已在 QQ 侧同意，已同步本地状态")
+            return
         logger.error(f"[请求管理] 同意请求失败: {e}")
         await approve_cmd.finish(f"❌ 同意失败：{e}")
         return
@@ -581,9 +641,16 @@ async def _approve_all(bot: Bot, event: MessageEvent):
                     sub_type=req.get("sub_type", "add"),
                     approve=True,
                 )
-            _mark_handled(req["id"], "approve")
+            _remove_request(req["id"])
             success += 1
         except Exception as e:
+            if _is_already_approved_error(e):
+                _remove_request(req["id"])
+                logger.info(
+                    f"[请求管理] 全部同意 - 序号 {req.get('id')} 已在 QQ 侧同意，同步本地状态"
+                )
+                success += 1
+                continue
             logger.error(f"[请求管理] 全部同意 - 序号 {req.get('id')} 失败: {e}")
             failed += 1
 
@@ -647,7 +714,7 @@ async def handle_reject(bot: Bot, event: MessageEvent, args: Message = CommandAr
                 approve=False,
                 reason=reason,
             )
-        _mark_handled(req_id, "reject")
+        _remove_request(req_id)
         success_msg = f"✅ 已拒绝请求 [{req_id}]" + (f"\n原因：{reason}" if reason else "")
     except Exception as e:
         logger.error(f"[请求管理] 拒绝请求失败: {e}")
@@ -681,7 +748,7 @@ async def _reject_all(bot: Bot, event: MessageEvent):
                     sub_type=req.get("sub_type", "add"),
                     approve=False,
                 )
-            _mark_handled(req["id"], "reject")
+            _remove_request(req["id"])
             success += 1
         except Exception as e:
             logger.error(f"[请求管理] 全部拒绝 - 序号 {req.get('id')} 失败: {e}")

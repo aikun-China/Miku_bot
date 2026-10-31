@@ -30,6 +30,7 @@ import importlib
 import inspect
 import threading
 from pathlib import Path
+from typing import Any
 
 # 项目根目录：向上两级（用于导入 utils）
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -58,6 +59,26 @@ from utils.user_store import (
 from utils.bg_helper import find_and_load_bg, load_bg_as_data_uri
 from utils.config_manager import config_manager
 from utils.avatar_cache import get_avatar_data_uri
+
+# ── AI 动作中心（可选依赖：没有它商店照常工作，只是不能被 AI 调用）──
+try:
+    from utils.ai_actions import (
+        ActionContext,
+        STATUS_ASK,
+        STATUS_ERROR,
+        STATUS_OK,
+        STATUS_SKIP,
+        STATUS_TOOL,
+        register_ai_action,
+    )
+
+    _AI_ACTIONS_READY = True
+except ImportError:  # pragma: no cover - 仅在精简部署时走到
+    _AI_ACTIONS_READY = False
+    ActionContext = Any  # type: ignore[assignment,misc]
+    register_ai_action = None  # type: ignore[assignment]
+    STATUS_OK, STATUS_TOOL, STATUS_ASK = "ok", "tool", "ask"
+    STATUS_ERROR, STATUS_SKIP = "error", "skip"
 
 
 # ============================================================
@@ -107,6 +128,10 @@ SHOP_FILE = DATA_DIR / "shop.json"
 
 # 商店数据读写锁，防止并发竞态
 _shop_lock = threading.Lock()
+
+# 购买锁：把「查余额 → 扣金币 → 入背包」串成一个不可分割的步骤，
+# 防止连点 / 多端并发时两次都通过余额校验（白拿道具或扣成负数）
+_buy_lock = threading.Lock()
 
 
 def _load_shop() -> dict:
@@ -434,9 +459,10 @@ def _call_shop_item_use_effect_handler(handler, bot, event, user_id, name, qty, 
     return handler(**kwargs)
 
 
-async def _send_item_use_effect_result(bot, event, result):
+async def _send_use_effect_result(send, result):
+    """把道具使用效果渲染出去。send 是 async 发消息函数（命令用 bot.send，AI 动作用 ctx.emit）。"""
     if isinstance(result, str):
-        await bot.send(event, result)
+        await send(result)
         return True
     if not isinstance(result, dict):
         return False
@@ -447,16 +473,16 @@ async def _send_item_use_effect_result(bot, event, result):
     image = result.get("image")
     video = result.get("video")
     if text:
-        await bot.send(event, text)
+        await send(text)
         sent = True
     for msg in send_list:
-        await bot.send(event, msg)
+        await send(msg)
         sent = True
     if image:
-        await bot.send(event, MessageSegment.image(image))
+        await send(MessageSegment.image(image))
         sent = True
     if video:
-        await bot.send(event, MessageSegment.video(video))
+        await send(MessageSegment.video(video))
         sent = True
     return sent
 
@@ -576,6 +602,96 @@ async def _render_shop_card(items: list, title: str = "MIKU 商店") -> str:
 
 
 # ============================================================
+# 购买核心（命令「购买」与 AI 动作 shop.buy 共用同一条扣费路径）
+# ============================================================
+# 命令路径单次最多 999 个；AI 动作单独限制 99 个（见 _ai_shop_buy）
+_MAX_BUY_QTY = 999
+_AI_MAX_QTY = 99
+
+_BUY_USAGE_TEXT = (
+    "❓ 用法：购买 <内容/编号> [数量]\n"
+    "　　示例：购买 双倍好感卡\n"
+    "　　示例：购买 1\n"
+    "　　示例：购买 双倍好感卡*3"
+)
+
+_USE_USAGE_TEXT = (
+    "❓ 用法：使用/使用道具 <内容/编号> [数量]\n"
+    "　　示例：使用 双倍好感卡\n"
+    "　　示例：使用道具 改名卡*2\n"
+    "　　示例：使用 1"
+)
+
+
+def _buy_core(user_id: str, query: str, qty: int) -> dict:
+    """购买核心：校验 → 扣金币 → 入背包 → 记销量。
+
+    「购买」命令与 AI 动作 ``shop.buy`` 都调用这里，
+    保证金币只在一个地方扣，不会出现两套扣费逻辑。
+
+    返回 ``{"ok": bool, "reply": str, ...}``，``reply`` 可直接发给用户。
+    """
+    qty = int(qty or 0)
+    if not query:
+        return {"ok": False, "reply": _BUY_USAGE_TEXT}
+    if qty <= 0:
+        return {"ok": False, "reply": "❌ 数量必须大于 0"}
+    if qty > _MAX_BUY_QTY:
+        return {"ok": False, "reply": f"❌ 单次最多购买 {_MAX_BUY_QTY} 个"}
+
+    idx, item = _find_item(query)
+    if item is None:
+        return {
+            "ok": False,
+            "reply": f"❌ 未找到商品「{query}」\n　　可发送「商店」查看商品列表",
+        }
+
+    name = item.get("name", "未命名")
+    price = int(item.get("price", 0) or 0)
+    total = price * qty
+
+    # 余额校验、扣款、入包、记销量全部在同一把锁里完成：
+    # 并发时后到的请求会重新读到已扣减的余额，不会白拿道具
+    with _buy_lock:
+        balance = get_balance(user_id)
+        if balance < total:
+            return {
+                "ok": False,
+                "balance": balance,
+                "reply": (
+                    f"❌ 金币不足！\n"
+                    f"　　需要：{total} 金币\n"
+                    f"　　当前：{balance} 金币\n"
+                    f"　　可发送「签到」获取金币"
+                ),
+            }
+
+        add_coins(user_id, -total)
+        item_key = _resolved_item_key(idx, name)
+        add_item(user_id, item_key, qty)
+
+        # 更新销量
+        with _shop_lock:
+            data = _load_shop_with_prefab()
+            if 0 <= idx < len(data["items"]):
+                data["items"][idx]["sold"] = (
+                    int(data["items"][idx].get("sold", 0)) + qty
+                )
+                _save_shop(data)
+
+        # 道具背包摘要
+        owned = int(get_items(user_id).get(item_key, 0))
+
+    return {
+        "ok": True,
+        "reply": f"购买{name}*{qty}成功\n你的{name}剩余{owned}个",
+        "name": name,
+        "qty": qty,
+        "item_key": item_key,
+    }
+
+
+# ============================================================
 # 处理：购买
 # ============================================================
 @buy_cmd.handle()
@@ -587,118 +703,58 @@ async def _handle_buy(bot, event: Event):
     # 兼容「购买 双倍好感卡」「购买 1」「购买 双倍好感卡*3」「购买 1 3」
     query, qty = _parse_qty(msg, default=1)
 
-    if not query:
-        await buy_cmd.finish(
-            "❓ 用法：购买 <内容/编号> [数量]\n"
-            "　　示例：购买 双倍好感卡\n"
-            "　　示例：购买 1\n"
-            "　　示例：购买 双倍好感卡*3"
-        )
-        return
-
-    if qty <= 0:
-        await buy_cmd.finish("❌ 数量必须大于 0")
-        return
-    if qty > 999:
-        await buy_cmd.finish("❌ 单次最多购买 999 个")
-        return
-
-    idx, item = _find_item(query)
-    if item is None:
-        await buy_cmd.finish(f"❌ 未找到商品「{query}」\n　　可发送「商店」查看商品列表")
-        return
-
-    name = item.get("name", "未命名")
-    price = int(item.get("price", 0) or 0)
-    total = price * qty
-
-    user_id = str(event.get_user_id())
-    balance = get_balance(user_id)
-
-    if balance < total:
-        await buy_cmd.finish(
-            f"❌ 金币不足！\n"
-            f"　　需要：{total} 金币\n"
-            f"　　当前：{balance} 金币\n"
-            f"　　可发送「签到」获取金币"
-        )
-        return
-
-    # 扣金币 + 加道具
-    new_balance = add_coins(user_id, -total)
-    item_key = _resolved_item_key(idx, name)
-    add_item(user_id, item_key, qty)
-
-    # 更新销量
-    with _shop_lock:
-        data = _load_shop_with_prefab()
-        if 0 <= idx < len(data["items"]):
-            data["items"][idx]["sold"] = int(data["items"][idx].get("sold", 0)) + qty
-            _save_shop(data)
-
-    # 道具背包摘要
-    items = get_items(user_id)
-    owned = items.get(item_key, 0)
-
-    await buy_cmd.finish(
-        f"购买{name}*{qty}成功\n"
-        f"你的{name}剩余{owned}个"
-    )
+    result = _buy_core(str(event.get_user_id()), query, qty)
+    await buy_cmd.finish(result["reply"])
 
 
 # ============================================================
-# 处理：使用（消耗用户背包中的商店道具）
+# 使用道具核心（命令「使用」与 AI 动作 shop.use 共用）
 # ============================================================
-@use_cmd.handle()
-async def _handle_use(bot, event: Event):
-    if not _is_enabled():
-        return
+_MAX_USE_QTY = 999
 
-    raw_msg = str(event.get_message()).strip()
-    msg = _parse_args(raw_msg, "使用道具")
-    if not msg:
-        msg = _parse_args(raw_msg, "使用")
-    if not msg:
-        msg = _parse_args(raw_msg, "use")
-    query, qty = _parse_qty(msg, default=1)
 
+async def _use_core(send, bot, event, user_id: str, query: str, qty: int) -> dict:
+    """使用道具核心：校验 → 触发道具效果 → 扣减背包。
+
+    ``send`` 是 async 发消息函数：命令路径传 ``bot.send`` 的包装，
+    AI 动作传 ``ctx.emit``，这样两条路径共用同一份发货逻辑。
+
+    返回 ``{"ok": bool, "reply": str, "sent": bool}``；
+    ``reply`` 为空表示效果消息已经通过 ``send`` 发过了。
+    """
+    qty = int(qty or 0)
     if not query:
-        await use_cmd.finish(
-            "❓ 用法：使用/使用道具 <内容/编号> [数量]\n"
-            "　　示例：使用 双倍好感卡\n"
-            "　　示例：使用道具 改名卡*2\n"
-            "　　示例：使用 1"
-        )
-        return
-
+        return {"ok": False, "reply": _USE_USAGE_TEXT, "sent": False}
     if qty <= 0:
-        await use_cmd.finish("❌ 数量必须大于 0")
-        return
-    if qty > 999:
-        await use_cmd.finish("❌ 单次最多使用 999 个")
-        return
+        return {"ok": False, "reply": "❌ 数量必须大于 0", "sent": False}
+    if qty > _MAX_USE_QTY:
+        return {"ok": False, "reply": f"❌ 单次最多使用 {_MAX_USE_QTY} 个", "sent": False}
 
-    user_id = str(event.get_user_id())
     idx, name, owned, key = _find_user_item(user_id, query)
     if name is None:
-        await use_cmd.finish(
-            f"❌ 未找到商品「{query}」\n　　可发送「商店」查看商品列表"
-        )
-        return
+        return {
+            "ok": False,
+            "reply": f"❌ 未找到商品「{query}」\n　　可发送「商店」查看商品列表",
+            "sent": False,
+        }
 
     if owned <= 0:
-        await use_cmd.finish(
-            f"❌ 你还没有「{name}」\n　　可发送「购买 {name}」获取"
-        )
-        return
+        return {
+            "ok": False,
+            "reply": f"❌ 你还没有「{name}」\n　　可发送「购买 {name}」获取",
+            "sent": False,
+        }
 
     if owned < qty:
-        await use_cmd.finish(
-            f"❌ 「{name}」数量不足！\n"
-            f"　　需要：{qty} 个\n"
-            f"　　当前：{owned} 个"
-        )
-        return
+        return {
+            "ok": False,
+            "reply": (
+                f"❌ 「{name}」数量不足！\n"
+                f"　　需要：{qty} 个\n"
+                f"　　当前：{owned} 个"
+            ),
+            "sent": False,
+        }
 
     remaining_after_consume = max(0, owned - qty)
     handler = _get_shop_item_use_effect_handler(name)
@@ -725,22 +781,45 @@ async def _handle_use(bot, event: Event):
     if consume:
         success = use_item(user_id, key, qty)
         if not success:
-            await use_cmd.finish("❌ 扣除失败，请稍后重试")
-            return
+            return {"ok": False, "reply": "❌ 扣除失败，请稍后重试", "sent": False}
 
     if result is not None:
-        sent = await _send_item_use_effect_result(bot, event, result)
+        sent = await _send_use_effect_result(send, result)
         if sent:
-            return
+            return {"ok": True, "reply": "", "sent": True}
 
     if consume:
-        await use_cmd.finish(
-            f"使用{name}*{qty}成功\n"
-            f"你的{name}剩余{remaining_after_consume}个"
-        )
+        return {
+            "ok": True,
+            "reply": f"使用{name}*{qty}成功\n你的{name}剩余{remaining_after_consume}个",
+            "sent": False,
+        }
+
+    return {"ok": False, "reply": "❌ 无法使用该道具", "sent": False}
+
+
+# ============================================================
+# 处理：使用（消耗用户背包中的商店道具）
+# ============================================================
+@use_cmd.handle()
+async def _handle_use(bot, event: Event):
+    if not _is_enabled():
         return
 
-    await use_cmd.finish("❌ 无法使用该道具")
+    raw_msg = str(event.get_message()).strip()
+    msg = _parse_args(raw_msg, "使用道具")
+    if not msg:
+        msg = _parse_args(raw_msg, "使用")
+    if not msg:
+        msg = _parse_args(raw_msg, "use")
+    query, qty = _parse_qty(msg, default=1)
+
+    async def _send(msg_obj):
+        await bot.send(event, msg_obj)
+
+    result = await _use_core(_send, bot, event, str(event.get_user_id()), query, qty)
+    if result.get("reply"):
+        await use_cmd.finish(result["reply"])
 
 
 # ============================================================
@@ -1143,6 +1222,293 @@ async def _handle_delete(bot, event: Event):
         f"✅ 已下架：{removed_name}\n"
         f"　　当前商品数：{remaining_count}"
     )
+
+
+# ============================================================
+# AI 动作：购买 / 使用 / 查询
+# ============================================================
+# 只暴露用户能力；「商店上传 / 更改 / 删除」这类管理动作绝不注册。
+# shop.buy / shop.use 设 confirm=True：路由层先问一句，用户回「确认」才真正执行，
+# 所以 handler 里只做真正的扣金币 / 发货，不重复实现确认逻辑。
+
+# 查询时这些词只是「泛指」，不是商品名
+_GENERIC_ITEM_WORDS = {
+    "", "道具", "东西", "物品", "商品", "库存", "货", "宝贝",
+    "这些", "那些", "哪些", "啥", "什么", "多少", "几个", "点",
+}
+
+# 这些词属于别的数据（金币/好感/签到），不要当成商店商品去查。
+# 注意用「整词相等」判断：商品名里可能就含「好感」（如「双倍好感卡」）
+_NON_SHOP_QUERY_WORDS = {
+    "金币", "余额", "钱", "金币数", "好感", "好感度", "签到", "等级", "经验", "经济",
+}
+
+
+def _normalize_query_name(raw) -> str:
+    """把「道具」这种泛指词归一成空字符串；顺手去掉句尾语气词。"""
+    q = str(raw or "").strip().strip("？?！!。.，,、~～\u3000 ")
+    compact = q.replace(" ", "")
+    core = compact.strip("吗呢呀啊么了吧啦嘛哦")
+    if not core or core in _GENERIC_ITEM_WORDS:
+        return ""
+    return q
+
+
+def _backpack_summary(user_id: str) -> str:
+    """背包里所有商店道具的概览（只读，不发消息）。"""
+    data = _load_shop_with_prefab()
+    items = get_items(user_id)
+    lines = []
+    total = 0
+    for i, it in enumerate(data.get("items", [])):
+        name = str(it.get("name", "") or "").strip()
+        if not name:
+            continue
+        special = _special_item_key(name)
+        normal = _item_key(i, name)
+        owned = 0
+        if special and int(items.get(special, 0) or 0) > 0:
+            owned = int(items.get(special, 0) or 0)
+        else:
+            owned = int(items.get(normal, 0) or 0)
+        if owned <= 0:
+            continue
+        lines.append(f"- {name} x{owned}")
+        total += owned
+
+    if not lines:
+        return "用户的背包里还没有任何商店道具（可发送「商店」查看商品）"
+    return "用户背包里的商店道具：\n" + "\n".join(lines) + f"\n合计 {total} 个"
+
+
+# 这些前缀属于 priority=10 的命令；命令能匹配时动作层必须让路，
+# 否则私聊里会「命令直接下单 + 路由又问确认」，用户回「确认」就重复购买
+_BUY_CMD_PREFIXES = ("购买", "buy")
+_USE_CMD_PREFIXES = ("使用", "use")
+_QUERY_CMD_PREFIXES = ("查询", "背包", "商品查询", "shop_query")
+
+
+def _starts_with_cmd(ctx: ActionContext, prefixes) -> bool:
+    """这句话是否会被同名命令匹配走。
+
+    命令只匹配「首个消息段是文本」的消息：群聊里 @Bot 开头的消息
+    （首个消息段是 at）命令根本不匹配，这时候动作层要正常执行。
+    """
+    try:
+        text = str(ctx.text or "").strip().lower()
+    except Exception:
+        return False
+    if not text.startswith(prefixes):
+        return False
+    try:
+        segments = list(ctx.event.get_message())
+    except Exception:
+        return True
+    return bool(segments) and segments[0].is_text()
+
+
+async def _ai_shop_buy(ctx: ActionContext) -> dict:
+    """AI 动作 shop.buy：真正下单（确认环节由路由层负责）。"""
+    if not _is_enabled():
+        return {"status": STATUS_SKIP}
+    if _starts_with_cmd(ctx, _BUY_CMD_PREFIXES):
+        return {"status": STATUS_SKIP}
+
+    item = _normalize_query_name(ctx.arg_str("item"))
+    if not item:
+        return {"status": STATUS_ASK, "question": "想买什么呢？可以说商品名或编号哦～"}
+
+    qty = ctx.arg_int("qty", 1)
+    if qty <= 0:
+        qty = 1
+    if qty > _AI_MAX_QTY:
+        return {
+            "status": STATUS_ERROR,
+            "reply": f"❌ 一次最多买 {_AI_MAX_QTY} 个哦，分几次买吧～",
+        }
+
+    user_id = ctx.user_id or str(getattr(ctx.event, "user_id", "") or "")
+    if not user_id:
+        return {"status": STATUS_SKIP}
+
+    result = _buy_core(user_id, item, qty)
+    if result.get("ok"):
+        await ctx.emit(result["reply"])
+        return {"status": STATUS_OK}
+    return {
+        "status": STATUS_ERROR,
+        "reply": result.get("reply") or "呜...购买失败了，等一下再试试～",
+    }
+
+
+async def _ai_shop_use(ctx: ActionContext) -> dict:
+    """AI 动作 shop.use：真正消耗道具（确认环节由路由层负责）。"""
+    if not _is_enabled():
+        return {"status": STATUS_SKIP}
+    if _starts_with_cmd(ctx, _USE_CMD_PREFIXES):
+        return {"status": STATUS_SKIP}
+
+    item = _normalize_query_name(ctx.arg_str("item"))
+    if not item:
+        return {"status": STATUS_ASK, "question": "想用哪个道具呀？说说商品名或编号～"}
+
+    qty = ctx.arg_int("qty", 1)
+    if qty <= 0:
+        qty = 1
+    if qty > _AI_MAX_QTY:
+        return {
+            "status": STATUS_ERROR,
+            "reply": f"❌ 一次最多用 {_AI_MAX_QTY} 个哦，分几次用吧～",
+        }
+
+    user_id = ctx.user_id or str(getattr(ctx.event, "user_id", "") or "")
+    if not user_id:
+        return {"status": STATUS_SKIP}
+
+    result = await _use_core(ctx.emit, ctx.bot, ctx.event, user_id, item, qty)
+    if result.get("reply"):
+        if result.get("ok"):
+            await ctx.emit(result["reply"])
+            return {"status": STATUS_OK}
+        return {
+            "status": STATUS_ERROR,
+            "reply": result.get("reply") or "呜...使用失败了，等一下再试试～",
+        }
+    return {"status": STATUS_OK}
+
+
+async def _ai_shop_query(ctx: ActionContext) -> dict:
+    """AI 动作 shop.query：查背包里某商品数量；不带商品名就给背包概览。"""
+    if not _is_enabled():
+        return {"status": STATUS_SKIP}
+    if _starts_with_cmd(ctx, _QUERY_CMD_PREFIXES):
+        return {"status": STATUS_SKIP}
+
+    user_id = ctx.user_id or str(getattr(ctx.event, "user_id", "") or "")
+    if not user_id:
+        return {"status": STATUS_SKIP}
+
+    query = _normalize_query_name(ctx.arg_str("item"))
+    if query and query.replace(" ", "") in _NON_SHOP_QUERY_WORDS:
+        # 「我有多少金币」之类：不是商店道具，交回普通聊天/其他插件
+        return {"status": STATUS_SKIP}
+
+    if not query:
+        # 背包概览：交给 AI 组织成自然回复
+        return {"status": STATUS_TOOL, "text": _backpack_summary(user_id)}
+
+    idx, name, owned, key = _find_user_item(user_id, query)
+    if name is None:
+        return {
+            "status": STATUS_ERROR,
+            "reply": f"❌ 未找到商品「{query}」\n　　可发送「商店」查看商品列表",
+        }
+
+    return {"status": STATUS_OK, "reply": f"你的{name}剩余{owned}个"}
+
+
+if _AI_ACTIONS_READY:
+    try:
+        # 购买：花钱，必须二次确认；patterns 只覆盖「我想买个 X」这类自然语言，
+        # 「购买 xxx」命令路径不变（on_command priority=10，会先命中）
+        register_ai_action(
+            name="shop.buy",
+            plugin="miku_shop",
+            plugin_display="商店",
+            description="花金币购买商店商品（会扣金币，需用户二次确认）",
+            handler=_ai_shop_buy,
+            params={
+                "item": {
+                    "type": "string",
+                    "required": True,
+                    "desc": "商品名或编号",
+                    "ask": "想买什么呢？可以说商品名或编号哦～",
+                },
+                "qty": {
+                    "type": "int",
+                    "required": False,
+                    "desc": "数量，默认1，最多99",
+                },
+            },
+            examples=["帮我买个双倍好感卡", "我想买一个改名卡", "下单双倍好感卡*3"],
+            patterns=[
+                # 刻意不匹配「购买 xxx」：那是 priority=10 的命令，规则再去抢会在
+                # 私聊里变成「命令直接下单 + 路由又问确认」的双重执行
+                r"^(?:帮我|给我|替我|我想|我要|我)\s*(?:买|购买|下单)\s*(?P<qty>\d{1,3})\s*个\s*(?P<item>.+?)$",
+                r"^(?:帮我|给我|替我|我想|我要|我)\s*(?:想|要)?(?:买|购买|下单)(?:个|一个|一下)?\s*(?P<item>.+?)(?:\s*[*×xX]\s*(?P<qty>\d{1,3}))?$",
+                r"^(?:买|下单)\s*(?P<qty>\d{1,3})\s*个\s*(?P<item>.+?)$",
+                r"^(?:买|下单)(?:个|一个|一下)?\s*(?P<item>.+?)(?:\s*[*×xX]\s*(?P<qty>\d{1,3}))?$",
+            ],
+            keywords=["买", "购买", "下单"],
+            order=21,
+            confirm=True,
+            confirm_text="确认要买吗？回复「确认」就扣金币下单，回复「取消」就算了～",
+        )
+
+        # 使用：消耗道具，同样二次确认
+        register_ai_action(
+            name="shop.use",
+            plugin="miku_shop",
+            plugin_display="商店",
+            description="使用背包里的商店道具（会消耗道具，需用户二次确认）",
+            handler=_ai_shop_use,
+            params={
+                "item": {
+                    "type": "string",
+                    "required": True,
+                    "desc": "商品名或编号",
+                    "ask": "想用哪个道具呀？说说商品名或编号～",
+                },
+                "qty": {
+                    "type": "int",
+                    "required": False,
+                    "desc": "数量，默认1，最多99",
+                },
+            },
+            examples=["我想用双倍好感卡", "帮我用个双倍好感卡", "使用双倍好感卡*2"],
+            patterns=[
+                # 同样不匹配「使用 xxx / use xxx」命令形式
+                r"^(?:帮我|给我|替我|我想|我要|我)\s*(?:用|使用|用掉)\s*(?P<qty>\d{1,3})\s*个\s*(?P<item>.+?)$",
+                r"^(?:帮我|给我|替我|我想|我要|我)\s*(?:想|要)?(?:用|使用|用掉)(?:一下|个|一个|掉)?\s*(?P<item>.+?)(?:\s*[*×xX]\s*(?P<qty>\d{1,3}))?$",
+                r"^(?:用|用掉)(?:一下|个|一个)?\s*(?P<item>.+?)(?:\s*[*×xX]\s*(?P<qty>\d{1,3}))?$",
+            ],
+            keywords=["使用", "用一下", "用个", "用掉"],
+            order=22,
+            confirm=True,
+            confirm_text="确认要使用吗？回复「确认」就消耗道具，回复「取消」就算了～",
+        )
+
+        # 查询：只读，不需要确认
+        register_ai_action(
+            name="shop.query",
+            plugin="miku_shop",
+            plugin_display="商店",
+            description="查询背包里某个商店商品的数量；不带商品名时给出背包概览",
+            handler=_ai_shop_query,
+            params={
+                "item": {
+                    "type": "string",
+                    "required": False,
+                    "desc": "商品名或编号，可不填（不填=看整个背包）",
+                },
+            },
+            examples=["我背包里有多少道具", "我还有几个双倍好感卡", "我的背包"],
+            patterns=[
+                # 必须带「我/我的」前缀：「背包…」本身就是命令，规则不去抢
+                r"^(?:我的|我)背包(?:里|里面|中|的)?(?:有|还有)?(?:多少|几个|什么|啥|哪些|\d{1,3})?(?:个|件|张)?(?:东西|道具|物品|商品)?\s*(?P<item>.+?)?$",
+                r"^(?:我的|我)?(?:道具|物品|商品|库存)(?:里|里面|中)?(?:有|还有)?(?:多少|几个|什么|啥|哪些)?(?:个|件|张)?(?:东西|道具|物品|商品)?[?？]?$",
+                # 「道具/东西」等泛指词必须出现，所以「我有多少金币」不会命中
+                r"^(?:我)?(?:有|还有|剩|剩下|剩余)(?:多少|几个|几|\d{1,3})?(?:个|件|张)?(?:什么|啥)?(?:道具|东西|物品|商品)\s*(?P<item>.+?)?$",
+                # 「查一下/看看」必须带类别词，避免抢「看看天气」这类说法
+                r"^(?:查一下|看看|看一下|查查)\s*(?:我的|我)?(?:的)?(?:背包|道具|物品|商品|库存)\s*(?P<item>.+?)?$",
+            ],
+            keywords=["背包", "道具", "还剩", "查询道具", "我的背包", "我的道具", "库存"],
+            order=23,
+        )
+
+        logger.info("[商店] 已注册 AI 动作：shop.buy / shop.use / shop.query")
+    except Exception as e:  # 注册失败不能影响商店本身
+        logger.warning(f"[商店] 注册 AI 动作失败：{type(e).__name__}: {e}")
 
 
 # ─── 菜单注册 ───

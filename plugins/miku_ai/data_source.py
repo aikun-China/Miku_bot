@@ -15,10 +15,12 @@ from nonebot.log import logger
 import httpx
 
 from .config import (get_config, PROJECT_ROOT, get_ai_platforms, mark_platform_failed,
-                     mark_platform_ok, get_platform_failover_cooldown, PLATFORM_COOLDOWN_DEFAULT)
+                     mark_platform_ok, get_platform_failover_cooldown,
+                     PLATFORM_COOLDOWN_DEFAULT, PLATFORM_COOLDOWN_RATE_LIMIT)
 from .memory_backend import ChatHistoryManager
 from .memory_store import MemoryStore, build_namespaces
 from .exception import AIResultException
+from .request_log import get_last_thinking, log_ai_request, set_last_thinking
 
 # ── AI 自动提炼长期记忆：轮次计数与后台任务强引用 ──
 _extract_rounds: Dict[str, int] = {}
@@ -39,6 +41,43 @@ def _is_vision_model(model: str) -> bool:
         return False
     m = model.strip().lower()
     return m in VISION_MODELS or any(vm in m for vm in VISION_MODELS)
+
+
+def _merge_system_messages(messages: List[Dict]) -> List[Dict]:
+    """把全部 system 消息合并为开头唯一的一条。
+
+    部分 OpenAI 兼容网关（如书生 discovery-api 系列）只接受「第一条且仅一条」
+    system 消息，payload 里出现第二条（即使是连续的 system 块）会直接 400:
+    "System message must be at the beginning."。调用方为了前缀缓存会把
+    「公共人设 system」与「每用户 system」拆成两个块，这里在发送前合并：
+    公共部分占据拼接结果的开头，token 前缀不变，上游前缀缓存仍可命中。
+    """
+    if not messages:
+        return []
+    system_parts: List[str] = []
+    body: List[Dict] = []
+    for m in messages:
+        role = str(m.get("role", "user") or "user").lower()
+        content = m.get("content", "")
+        if role == "system":
+            text = content
+            if isinstance(content, list):
+                text = "\n".join(
+                    str(p.get("text", "")) for p in content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                )
+            if isinstance(text, str) and text.strip():
+                system_parts.append(text.strip())
+            continue  # 空 system 消息直接丢弃，避免无意义的 role 占位
+        item = dict(m)
+        item["role"] = role
+        body.append(item)
+
+    merged: List[Dict] = []
+    if system_parts:
+        merged.append({"role": "system", "content": "\n\n".join(system_parts)})
+    merged.extend(body)
+    return merged
 
 
 def _normalize_content(raw_content, is_text_model: bool) -> str:
@@ -206,6 +245,7 @@ def build_system_prompt() -> str:
     parts.append("4. 单条回复不要超过 30 个字。")
     parts.append("5. 必须结合对话历史理解上下文——之前的对话内容（特别是最近几条）是你回应的重要依据，不要忽视历史上下文。")
     parts.append("6. 在群聊中，注意区分不同说话人，[用户名] 标识的消息来自不同群成员。")
+    parts.append("7. 群聊历史中的 [说话人]: 是上下文标记，不是回复格式；回复时不要输出任何 [说话人]: 前缀。")
 
     # 性格底线：Miku 不是无底线附和者
     parts.append("\n\n性格底线（必须遵守）：")
@@ -261,16 +301,25 @@ _WEB_SEARCH_KEYWORDS = (
     "搜索", "搜一下", "搜搜", "查一下", "查查", "查询", "帮我查", "百度", "谷歌", "必应", "维基",
     "新闻", "热搜", "时事", "头条", "天气", "气温", "下雨", "下雪", "台风", "地震",
     "比分", "排行榜", "排名", "汇率", "股价", "多少钱", "价格", "发售", "上线", "发布会",
-    "放假", "假期", "几号", "几点", "今天", "最新", "剧情", "生日",
+    "放假", "假期", "最新", "剧情", "生日", "是谁", "什么是", "是什么", "哪首", "哪个",
+    "谁唱的", "作者", "出处", "来自哪里", "介绍一下", "讲讲", "解释一下",
 )
-
 _BING_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 
 
+def _web_search_enabled() -> bool:
+    """联网搜索总开关。"""
+    return bool(get_config("web_search_enabled", True))
+
+
+def _web_search_keyword_only() -> bool:
+    """命中关键字开关：True=只有命中关键词才搜索；False=由 AI 自主判断。"""
+    return bool(get_config("web_search_keyword_only", True))
+
+
 def _needs_web_search(text: str) -> bool:
-    if not bool(get_config("web_search_enabled", True)):
-        return False
+    """消息是否命中联网搜索关键词（不判断总开关）。"""
     t = (text or "").strip()
     if len(t) < 4 or len(t) > 200:
         return False
@@ -378,23 +427,75 @@ async def _ai_search_decision(history: List[Dict], user_text: str) -> Tuple[Opti
         return None, ""
 
 
-# ── API 并发限制：多群同时触发时排队，防低配机过载与上游限流（api_max_concurrency，默认2） ──
-_api_semaphore: Optional[asyncio.Semaphore] = None
+async def _resolve_search_query(history: List[Dict], text: str) -> str:
+    """按两个开关决定本次是否需要联网搜索，返回 query（空字符串=不搜索）。
+
+    - 联网搜索总开关关闭：不搜索；
+    - 命中关键字开关开启：只有命中关键词的消息才搜索，直接用用户消息作 query；
+    - 命中关键字开关关闭：不设关键词门槛，由 AI 结合上下文自主判断并生成 query；
+      AI 判断失败时退回关键词匹配，避免搜索能力整体失效。
+    """
+    if not _web_search_enabled():
+        return ""
+    if _web_search_keyword_only():
+        if not _needs_web_search(text):
+            return ""
+        return re.sub(r"\s+", " ", (text or "").strip())[:60]
+
+    if not (text or "").strip():
+        return ""
+    need, q = await _ai_search_decision(history, text)
+    if need:
+        return re.sub(r"\s+", " ", (q or (text or "").strip()))[:60]
+    if need is None and _needs_web_search(text):
+        return re.sub(r"\s+", " ", (text or "").strip())[:60]
+    return ""
 
 
-def _get_api_semaphore() -> asyncio.Semaphore:
-    global _api_semaphore
-    if _api_semaphore is None:
-        _api_semaphore = asyncio.Semaphore(max(1, int(get_config("api_max_concurrency", 2) or 2)))
-    return _api_semaphore
+# ── 按模型并发限制：模型满载时优先分配给配置列表中的下一个可用模型 ──
+_platform_active_requests: Dict[Tuple[str, str, str], int] = {}
+_platform_capacity_condition = asyncio.Condition()
+
+
+def _platform_model_key(
+    platform: Dict[str, str], has_image: bool, model: str
+) -> Tuple[str, str, str]:
+    selected_model = model or (
+        platform["model"] if has_image else (platform["text_model"] or platform["model"])
+    )
+    return platform["name"], platform["base_url"].rstrip("/"), selected_model
+
+
+async def _reserve_platform(
+    platforms: List[Dict[str, str]], has_image: bool, model: str
+) -> Tuple[Dict[str, str], Tuple[str, str, str]]:
+    limit = max(1, int(get_config("api_max_concurrency", 2) or 2))
+    async with _platform_capacity_condition:
+        while True:
+            for platform in platforms:
+                key = _platform_model_key(platform, has_image, model)
+                if _platform_active_requests.get(key, 0) < limit:
+                    _platform_active_requests[key] = _platform_active_requests.get(key, 0) + 1
+                    return platform, key
+            await _platform_capacity_condition.wait()
+
+
+async def _release_platform(key: Tuple[str, str, str]) -> None:
+    async with _platform_capacity_condition:
+        active = _platform_active_requests.get(key, 0)
+        if active <= 1:
+            _platform_active_requests.pop(key, None)
+        else:
+            _platform_active_requests[key] = active - 1
+        _platform_capacity_condition.notify_all()
 
 
 async def _post_with_retry(client: httpx.AsyncClient, url: str,
                            headers: Dict, body: Dict) -> httpx.Response:
-    """429/5xx 属瞬时故障：指数退避重试（2s→4s，最多2次），其余状态码原样返回由调用方分级处理"""
+    """5xx 指数退避重试；429 直接由上层切换平台，避免等待限流恢复"""
     r = await client.post(url, headers=headers, json=body)
     for attempt in range(2):
-        if r.status_code not in (429, 500, 502, 503, 504):
+        if r.status_code not in (500, 502, 503, 504):
             break
         wait = 2.0 * (2 ** attempt)
         logger.warning(f"[miku_ai] API {r.status_code}，{wait:.0f}s后重试({attempt + 1}/2): {r.text[:120]}")
@@ -406,8 +507,7 @@ async def _post_with_retry(client: httpx.AsyncClient, url: str,
 async def _call_ai_api(messages: List[Dict], temperature: float = 1.0,
                        max_tokens: int = 0, request_timeout: int = 0,
                        model: str = "", thinking: bool = True) -> str:
-    """带多平台故障转移的 AI 调用：按顺序尝试 ai_platforms 平台列表，
-    当前平台限流/余额不足/鉴权失败/宕机时自动切换下一个平台"""
+    """按配置顺序分配空闲模型；模型满载或发生平台故障时切换后续模型。"""
     platforms = get_ai_platforms()
     if not platforms:
         raise AIResultException("AI配置不完整，请检查配置")
@@ -419,8 +519,11 @@ async def _call_ai_api(messages: List[Dict], temperature: float = 1.0,
         for m in messages
     )
 
+    remaining_platforms = list(platforms)
     last_exc: Optional[AIResultException] = None
-    for platform in platforms:
+    request_started = time.perf_counter()
+    while remaining_platforms:
+        platform, capacity_key = await _reserve_platform(remaining_platforms, has_image, model)
         try:
             content = await _call_ai_api_once(
                 platform, messages, has_image,
@@ -428,14 +531,25 @@ async def _call_ai_api(messages: List[Dict], temperature: float = 1.0,
                 request_timeout=request_timeout, model=model, thinking=thinking,
             )
             mark_platform_ok(platform["name"])
+            logger.info(
+                f"[miku_ai] AI请求完成: platform={platform['name']}, "
+                f"elapsed={time.perf_counter() - request_started:.2f}s"
+            )
             return content
         except AIResultException as e:
             cooldown = getattr(e, "failover_cooldown", 0.0)
-            if cooldown <= 0:
+            # 平台级故障（限流/鉴权/余额/5xx/超时）冷却后切换；
+            # 平台特有的请求校验错误（如只允许一条 system 消息）只为本次请求换平台，不给平台记冷却
+            switch_platform = cooldown > 0 or getattr(e, "failover_next_platform", False)
+            if not switch_platform:
                 raise
-            mark_platform_failed(platform["name"], cooldown)
-            logger.warning(f"[miku_ai] 平台 {platform['name']} 不可用（冷却{cooldown:.0f}s），切换下一个平台")
+            if cooldown > 0:
+                mark_platform_failed(platform["name"], cooldown)
+                logger.warning(f"[miku_ai] 平台 {platform['name']} 不可用（冷却{cooldown:.0f}s），切换下一个平台")
             last_exc = e
+            remaining_platforms = [p for p in remaining_platforms if p is not platform]
+        finally:
+            await _release_platform(capacity_key)
     raise last_exc or AIResultException("AI 请求失败")
 
 
@@ -477,12 +591,16 @@ async def _call_ai_api_once(platform: Dict[str, str], raw_messages: List[Dict],
             "role": m.get("role", "user"),
             "content": _normalize_content(m.get("content", ""), is_text_model),
         })
+    # 严格网关只认「开头唯一一条 system」：把拆分的 system 块合并后再发送
+    messages = _merge_system_messages(messages)
 
     url = platform["base_url"] + "/chat/completions"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {platform['api_key']}",
-    }
+    headers = {"Content-Type": "application/json"}
+    # 本地 ollama 等平台没有 API Key：绝不能拼出 "Bearer "（尾部空格），
+    # h11/httpx 会直接抛 LocalProtocolError，请求根本发不出去
+    api_key = str(platform.get("api_key", "") or "").strip()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     # 模型兼容性处理：glm-4.5-air 等模型可能不支持 thinking 参数
     # 如果是文本模型，先试探性带上 thinking，失败再去掉重试
@@ -500,44 +618,50 @@ async def _call_ai_api_once(platform: Dict[str, str], raw_messages: List[Dict],
     timeout = request_timeout or int(get_config("request_timeout", 30) or 30)
 
     try:
-        async with _get_api_semaphore(), httpx.AsyncClient(timeout=float(timeout)) as client:
+        async with httpx.AsyncClient(timeout=float(timeout)) as client:
             r = await _post_with_retry(client, url, headers, body)
 
-            # 400 错误分级处理
+            # 400 错误分级处理：先按错误文本判断真实原因，再决定重试方式。
+            # 之前的写法只要 body 里带了 thinking 就走「移除 thinking」分支，
+            # 会把 token 超限、system 位置错误等全部误判成 thinking 不兼容。
             if r.status_code == 400:
                 err_text = r.text.lower()
-                # 1) thinking 参数不兼容 → 移除后重试
-                if "thinking" in body:
-                    logger.warning(f"[miku_ai] thinking 参数导致 400，移除后重试: {r.text[:200]}")
+                # 1) 输入 token / 上下文超限 → 截断历史后重试
+                if any(k in err_text for k in ("context", "token", "length", "too long", "exceed")):
+                    logger.warning(f"[miku_ai] 输入 token 超限，截断上下文后重试: {r.text[:300]}")
+                    if len(messages) > 3:
+                        # 保留开头 system + 最近两条，且再次做 system 合并
+                        body["messages"] = _merge_system_messages([messages[0]] + messages[-2:])
+                        r = await client.post(url, headers=headers, json=body)
+                # 2) thinking 参数不兼容 → 移除后重试
+                elif "thinking" in body:
+                    logger.warning(f"[miku_ai] 首次 400，移除 thinking 参数后重试: {r.text[:200]}")
                     body.pop("thinking", None)
                     r = await client.post(url, headers=headers, json=body)
-                    # 重试仍 400，进一步降级
+                    # 重试仍 400，进一步降级：max_tokens 超限则减半
                     if r.status_code == 400:
                         retry_err = r.text.lower()
                         if "max_tokens" in retry_err or "maximum" in retry_err:
-                            # max_tokens 超限，减半重试
                             logger.warning("[miku_ai] max_tokens 超限，减半重试")
                             body["max_tokens"] = max(256, int(body.get("max_tokens", 1024) / 2))
                             r = await client.post(url, headers=headers, json=body)
-                # 2) 输入 token 超限 → 截断上下文后重试
-                elif "context" in err_text or "token" in err_text or "length" in err_text:
-                    logger.warning(f"[miku_ai] 输入 token 超限，截断上下文后重试: {r.text[:300]}")
-                    if len(messages) > 3:
-                        truncated = [messages[0]] + messages[-2:]
-                        body["messages"] = truncated
-                        r = await client.post(url, headers=headers, json=body)
 
             if r.status_code != 200:
                 logger.warning(f"[miku_ai] AI API 失败 HTTP {r.status_code} (平台 {name}): {r.text[:500]}")
                 # 400 错误：区分真正的长度超限还是其他参数错误
                 if r.status_code == 400:
                     real_err = r.text.lower()
-                    if "context" in real_err or "token" in real_err or "length" in real_err:
-                        raise AIResultException("主人发的消息太长啦，Miku的小脑袋装不下喵～能说短一点吗？")
-                    elif "max_tokens" in real_err or "maximum" in real_err:
+                    # max_tokens 相关必须先判，否则会被 "token" 关键词误判成消息过长
+                    if "max_tokens" in real_err or "maximum" in real_err:
                         raise AIResultException("Miku脑子有点累了，这条消息装不下啦～能说短一点吗？")
-                    else:
-                        raise AIResultException("呜...Miku脑子卡住了...等一下再试试吧～")
+                    if any(k in real_err for k in ("context", "token", "length", "too long", "exceed")):
+                        raise AIResultException("主人发的消息太长啦，Miku的小脑袋装不下喵～能说短一点吗？")
+                    # 其余是平台特有的请求校验错误（例如只允许一条 system 消息）：
+                    # 换一个平台往往就能成功，标记后交给外层故障转移，不要整条回复失败
+                    err = AIResultException("呜...Miku脑子卡住了...等一下再试试吧～")
+                    err.failover_next_platform = True
+                    logger.warning(f"[miku_ai] 平台 {name} 拒绝了本次请求，尝试切换下一个平台")
+                    raise err
                 # 429/402/401/403/5xx 属平台级故障：附冷却时间由外层切换平台
                 cooldown = get_platform_failover_cooldown(r.status_code, r.text)
                 if r.status_code == 429:
@@ -555,25 +679,37 @@ async def _call_ai_api_once(platform: Dict[str, str], raw_messages: List[Dict],
                 raise AIResultException("AI 没有返回内容")
             logger.debug(f"[miku_ai] AI API choices[0] 类型: {type(choices[0]).__name__}")
             content = _extract_content(choices[0])
+            _capture_thinking(choices[0])
             if not content:
                 # glm-4.6v 思考模式下可能 content 为空但 reasoning_content 有值
                 # 说明 max_tokens 不够，增大后重试一次
                 finish_reason = choices[0].get("finish_reason", "") if isinstance(choices[0], dict) else ""
                 if finish_reason == "length" and max_tokens and max_tokens > 0:
                     logger.warning(f"[miku_ai] finish_reason=length, content 为空，增大 max_tokens 重试")
-                    body["max_tokens"] = min(max_tokens * 3, 32000)
+                    body["max_tokens"] = min(max(max_tokens * 2, 1024), 16384)
                     r2 = await client.post(url, headers=headers, json=body)
                     if r2.status_code == 200:
                         data2 = _decode_ai_response(r2, name)
                         choices2 = data2.get("choices", []) if isinstance(data2, dict) else []
                         if choices2:
                             content = _extract_content(choices2[0])
+                            _capture_thinking(choices2[0])
                 if not content:
                     logger.warning(f"[miku_ai] AI API 返回空内容: {data}")
                     raise AIResultException("AI 返回了空内容")
             return content
     except httpx.TimeoutException:
-        raise AIResultException("AI 请求超时")
+        # 超时同样切换平台：本地模型未启动/端口不通时常见 ConnectTimeout，
+        # 若直接抛错会让整条回复失败。短冷却（60s）后重试，避免长期误伤慢平台。
+        err = AIResultException("AI 请求超时")
+        err.failover_cooldown = PLATFORM_COOLDOWN_RATE_LIMIT
+        raise err
+    except httpx.LocalProtocolError as e:
+        # 本地请求构造错误（例如空 API Key 拼出非法头）：是我们的 payload 问题，
+        # 换平台能解决，但绝不该给平台记 5 分钟冷却
+        err = AIResultException(f"AI 请求构造失败: {e}")
+        err.failover_next_platform = True
+        raise err
     except httpx.HTTPError as e:
         # 连接失败（平台宕机/网络不通）属平台级故障，冷却后由外层切换平台
         err = AIResultException(f"AI 请求失败: {type(e).__name__}")
@@ -583,6 +719,17 @@ async def _call_ai_api_once(platform: Dict[str, str], raw_messages: List[Dict],
         if isinstance(e, AIResultException):
             raise
         raise AIResultException(f"AI 请求失败: {e}")
+
+
+def _capture_thinking(choice) -> None:
+    """记录本轮 AI 返回的思考内容（reasoning_content / thinking），供请求日志使用。"""
+    try:
+        message = choice.get("message", {}) if isinstance(choice, dict) else {}
+        if isinstance(message, dict):
+            reasoning = message.get("reasoning_content") or message.get("thinking") or ""
+            set_last_thinking(str(reasoning))
+    except Exception:
+        pass
 
 
 def _extract_content(choice) -> str:
@@ -671,6 +818,23 @@ def _strip_think_blocks(text: str) -> str:
     return cleaned.strip()
 
 
+def _strip_bot_name_prefix(text: str, nicknames: List[str]) -> str:
+    """Remove speaker labels accidentally copied from the group-chat context."""
+    names = sorted(
+        {name.strip() for name in nicknames if isinstance(name, str) and name.strip()},
+        key=len,
+        reverse=True,
+    )
+    if not names or not text:
+        return text
+    names_pattern = "|".join(re.escape(name) for name in names)
+    return re.sub(
+        rf"(?m)^[ \t]*\[(?:{names_pattern})\][ \t]*[:：][ \t]*",
+        "",
+        text,
+    ).strip()
+
+
 def _parse_line_markers(text: str) -> Dict:
     """解析响应中的标记，如[emotion:xxx]"""
     result = {"emotion_name": None}
@@ -736,10 +900,13 @@ def split_reply_segments(text: str, max_length: int = 150) -> List[str]:
 async def process_chat(user_id: str, user_name: str, text: str,
                        image_urls: List[str] = None, group_id: str = "",
                        image_files: List[str] = None,
-                       message_id: str = "") -> Tuple[str, Dict]:
+                       message_id: str = "", message_ts: int = 0,
+                       tool_context: str = "") -> Tuple[str, Dict]:
     """
     处理AI聊天（leekchat风格集成版）
     message_id：QQ 消息号，用于与被动记录钩子写入的原始消息去重合并（upsert 增强）
+    message_ts：这条消息的到达时间（秒），作为没有 message_id 锚点时的裁剪兜底
+    tool_context：插件动作（如天气查询）返回的真实数据，注入上下文让 AI 自然作答
     返回: (回复文本, 附加信息dict)
     """
     is_group = bool(group_id)
@@ -826,8 +993,12 @@ async def process_chat(user_id: str, user_name: str, text: str,
     humanize = get_humanize_engine()
 
     # 获取聊天记录（被动记录钩子会先把当前消息写入，读取时排除当前消息避免重复）
+    # cutoff_*：把历史截止到「当前这条消息」之前。AI 处理可能很慢（识图、联网搜索
+    # 判断都会耗时），期间群里继续涌入的新消息如果也读进来，它们会排到当前消息
+    # 前面，模型就会去接这些更新的消息，出现驴头不对马嘴。
     history = get_history_manager().get_raw_messages(
-        session_id, limit=50, exclude_message_id=str(message_id or "")
+        session_id, limit=50, exclude_message_id=str(message_id or ""),
+        cutoff_message_id=str(message_id or ""), cutoff_ts=int(message_ts or 0),
     )
 
     target_message = {
@@ -903,31 +1074,31 @@ async def process_chat(user_id: str, user_name: str, text: str,
         except Exception as e:
             logger.warning(f"[miku_ai] 长期记忆召回失败: {e}")
 
-    # ── 联网搜索：AI自主判断优先（带上下文能理解指代），判断失败退回关键词（仅文本消息，不落历史） ──
-    if not processed_image_urls and bool(get_config("web_search_enabled", True)):
-        search_query = ""
-        if bool(get_config("web_search_ai_judge", True)):
-            need, q = await _ai_search_decision(history, text)
-            if need:
-                search_query = re.sub(r"\s+", " ", (q or (text or "").strip()))[:60]
-            elif need is None:
-                if _needs_web_search(text):
-                    search_query = re.sub(r"\s+", " ", (text or "").strip())[:60]
-        elif _needs_web_search(text):
-            search_query = re.sub(r"\s+", " ", (text or "").strip())[:60]
+    # ── 联网搜索：总开关 + 命中关键字开关（仅文本消息，不落历史） ──
+    if not processed_image_urls:
+        search_query = await _resolve_search_query(history, text)
         if search_query:
             search_block = await _web_search(search_query)
             if search_block:
                 dynamic_context = f"{dynamic_context}\n\n{search_block}" if dynamic_context else search_block
 
+    # ── 插件动作结果：AI 路由层查到的事实数据，让模型自然作答 ──
+    if tool_context:
+        tool_block = (
+            "【插件数据】（这是刚刚为用户查询到的真实数据，请自然地用它回答用户，"
+            "不要复述字段名、不要编造额外信息）\n" + tool_context
+        )
+        dynamic_context = f"{dynamic_context}\n\n{tool_block}" if dynamic_context else tool_block
+
     # ── 敏感词提示注入 dynamic_context 末尾（位于消息数组尾部，不影响 system 前缀缓存） ──
     if sensitive_hint:
         dynamic_context = f"{dynamic_context}\n\n{sensitive_hint}" if dynamic_context else sensitive_hint
 
-    # 构建上下文消息
-    context_messages = get_history_manager().get_context_messages(
-        session_id, is_group=is_group, system_prompt=system_prompt,
-        bot_nickname=bot_nickname, exclude_message_id=str(message_id or "")
+    # 构建上下文消息：复用上面读到的同一份历史快照，而不是重新读库。
+    # 重新读库会把「当前消息之后」涌入的新消息也带进来，打乱时间线。
+    context_messages = get_history_manager().build_context_messages(
+        history, is_group=is_group, system_prompt=system_prompt,
+        bot_nickname=bot_nickname,
     )
     if user_context_prompt:
         # Keep user-specific instructions as a separate system message so the
@@ -1012,14 +1183,18 @@ async def process_chat(user_id: str, user_name: str, text: str,
         if text_max:
             max_tokens = text_max
 
+    _ai_started = time.perf_counter()
     reply = await _call_ai_api(
         context_messages,
         temperature=temperature,
         max_tokens=max_tokens,
     )
+    _ai_elapsed = time.perf_counter() - _ai_started
+    _raw_reply = reply
 
     # 去除思考块
     reply = _strip_think_blocks(reply)
+    reply = _strip_bot_name_prefix(reply, nicknames)
 
     # 解析响应标记
     markers = _parse_line_markers(reply)
@@ -1030,6 +1205,18 @@ async def process_chat(user_id: str, user_name: str, text: str,
     sticker = await humanize.emoji_agent.process_sticker_response(reply)
     if sticker.success and sticker.emoji_path:
         reply = sticker.cleaned_text
+
+    # 记录本次 AI 请求日志（用户 / 思考 / 输出 / 耗时），失败不影响回复
+    try:
+        log_ai_request(
+            user_id=user_id,
+            user_text=text if text else ("[图片]" if processed_image_urls else ""),
+            thinking=get_last_thinking(_raw_reply),
+            output=reply,
+            elapsed=_ai_elapsed,
+        )
+    except Exception:
+        pass
 
     # 保存历史（用户消息带 message_id：与被动记录的原始消息 upsert 合并，写入识图增强内容）
     get_history_manager().append_message(

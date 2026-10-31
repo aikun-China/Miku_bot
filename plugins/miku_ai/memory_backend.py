@@ -144,9 +144,12 @@ class ChatHistoryManager:
                 (session_id, mid),
             ).fetchone()
             if existing:
+                # 保留原始 created_at（消息到达时间）：upsert 只是把被动记录的原始
+                # 文本替换成识图/引用增强后的内容，不应把消息「挪到」处理完成的时刻，
+                # 否则基于时间戳的上下文时间窗口与排序都会被弄乱。
                 conn.execute(
-                    "UPDATE messages SET content=?, user_name=?, images=?, created_at=? WHERE id=?",
-                    (content_str, user_name or "", images_str, now, existing["id"]),
+                    "UPDATE messages SET content=?, user_name=?, images=? WHERE id=?",
+                    (content_str, user_name or "", images_str, existing["id"]),
                 )
                 conn.commit()
                 return False
@@ -160,12 +163,48 @@ class ChatHistoryManager:
         conn.commit()
         return True
 
-    def get_history(self, session_id: str, exclude_message_id: str = "") -> List[Dict]:
-        rows = self._conn.execute(
-            "SELECT message_id, role, content, user_id, user_name, images, created_at "
-            "FROM messages WHERE session_id=? ORDER BY id ASC",
-            (session_id,),
-        ).fetchall()
+    def _find_anchor(self, session_id: str, message_id: str):
+        """返回指定 message_id 对应行的 (id, created_at)；不存在返回 None。"""
+        mid = str(message_id or "").strip()
+        if not mid:
+            return None
+        return self._conn.execute(
+            "SELECT id, created_at FROM messages WHERE session_id=? AND message_id=? "
+            "ORDER BY id ASC LIMIT 1",
+            (session_id, mid),
+        ).fetchone()
+
+    def get_history(self, session_id: str, exclude_message_id: str = "",
+                    cutoff_message_id: str = "", cutoff_ts: int = 0) -> List[Dict]:
+        """按写入顺序（id 升序）读取会话历史。
+
+        cutoff_message_id：只返回该 message_id 那条消息**之前**的消息（不含它）；
+        cutoff_ts：该消息尚未落库时的兜底，只返回 created_at <= cutoff_ts 的消息。
+        两者都用于把 AI 上下文截止到「当前要回复的那条消息」。AI 处理较慢时
+        （识图、联网搜索判断都可能耗上十几秒）群里还会涌入新消息，如果不裁剪，
+        这些比当前消息更新的内容会被插到当前消息前面，模型就会去接新消息，出现
+        驴头不对马嘴。
+        """
+        sql = ("SELECT message_id, role, content, user_id, user_name, images, created_at "
+               "FROM messages WHERE session_id=?")
+        params: List = [session_id]
+
+        cutoff_mid = str(cutoff_message_id or "").strip()
+        anchored = False
+        if cutoff_mid:
+            anchor = self._find_anchor(session_id, cutoff_mid)
+            if anchor is not None:
+                sql += " AND id < ?"
+                params.append(anchor["id"])
+                anchored = True
+        if not anchored and cutoff_ts:
+            sql += " AND created_at <= ?"
+            params.append(int(cutoff_ts))
+        if anchored:
+            logger.debug(f"[miku_ai] 历史裁剪: session={session_id} 截止到当前消息 {cutoff_mid} 之前")
+
+        sql += " ORDER BY id ASC"
+        rows = self._conn.execute(sql, params).fetchall()
         exclude = str(exclude_message_id or "").strip()
         history = []
         for r in rows:
@@ -189,18 +228,23 @@ class ChatHistoryManager:
         return history
 
     def get_raw_messages(self, session_id: str, limit: int = 50,
-                         exclude_message_id: str = "") -> List[Dict]:
+                         exclude_message_id: str = "",
+                         cutoff_message_id: str = "", cutoff_ts: int = 0) -> List[Dict]:
         """获取原始消息列表（用于动态上下文构建）"""
-        history = self.get_history(session_id, exclude_message_id=exclude_message_id)
+        history = self.get_history(
+            session_id, exclude_message_id=exclude_message_id,
+            cutoff_message_id=cutoff_message_id, cutoff_ts=cutoff_ts,
+        )
         return history[-limit:] if len(history) > limit else list(history)
 
-    def get_context_messages(self, session_id: str, is_group: bool = False,
-                             system_prompt: str = "", max_context: int = 0,
-                             bot_nickname: str = "",
-                             exclude_message_id: str = "") -> List[Dict]:
-        """获取用于发送给AI的上下文消息，群聊中附带用户名便于AI区分对话者"""
-        history = self.get_history(session_id, exclude_message_id=exclude_message_id)
+    def build_context_messages(self, history: List[Dict], is_group: bool = False,
+                               system_prompt: str = "", max_context: int = 0,
+                               bot_nickname: str = "") -> List[Dict]:
+        """把一段历史快照转成发送给 AI 的上下文消息，群聊中附带用户名便于 AI 区分对话者。
 
+        不重新读库：调用方可先读一次历史（并裁剪到当前消息之前），把同一份快照
+        同时用于动态上下文和 messages，保证一次回复内看到的是同一条时间线。
+        """
         # 时间窗口过滤（0=禁用）：只保留最近N分钟内的消息，避免隔夜旧话题进入AI上下文
         window_minutes = int(get_config("context_time_window_minutes", 0) or 0)
         if window_minutes > 0:
@@ -210,9 +254,9 @@ class ChatHistoryManager:
         if max_context <= 0:
             max_context = int(get_config("group_context_max", 25) if is_group else get_config("private_context_max", 30))
 
-        context = []
         recent = history[-max_context:] if len(history) > max_context else history
 
+        context = []
         for msg in recent:
             role = msg.get("role", "user")
             content = msg.get("content", "")
@@ -223,6 +267,8 @@ class ChatHistoryManager:
                 if isinstance(content, str) and content:
                     content = f"[{user_name}]: {content}"
                 elif isinstance(content, list):
+                    # 快照会被多处复用，复制后再改，避免污染原历史
+                    content = [dict(part) if isinstance(part, dict) else part for part in content]
                     for part in content:
                         if isinstance(part, dict) and part.get("type") == "text":
                             part["text"] = f"[{user_name}]: {part['text']}"
@@ -241,6 +287,25 @@ class ChatHistoryManager:
             context.insert(0, {"role": "system", "content": system_prompt})
 
         return context
+
+    def get_context_messages(self, session_id: str, is_group: bool = False,
+                             system_prompt: str = "", max_context: int = 0,
+                             bot_nickname: str = "",
+                             exclude_message_id: str = "",
+                             cutoff_message_id: str = "", cutoff_ts: int = 0) -> List[Dict]:
+        """读取历史并构建上下文消息（一次性读库版本，保留给旧调用方）。
+
+        主对话流程请使用 get_raw_messages + build_context_messages：先读一次快照
+        再复用，避免两次读库之间涌入的新消息混进上下文。
+        """
+        history = self.get_history(
+            session_id, exclude_message_id=exclude_message_id,
+            cutoff_message_id=cutoff_message_id, cutoff_ts=cutoff_ts,
+        )
+        return self.build_context_messages(
+            history, is_group=is_group, system_prompt=system_prompt,
+            max_context=max_context, bot_nickname=bot_nickname,
+        )
 
     def clear_history(self, session_id: str):
         self._conn.execute("DELETE FROM messages WHERE session_id=?", (session_id,))

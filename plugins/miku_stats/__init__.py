@@ -35,6 +35,11 @@ from utils.screenshot import screenshot_html, to_image_uri
 from utils.bg_helper import find_and_load_bg
 from utils.avatar_cache import get_avatar_data_uri
 
+try:
+    from utils.ai_actions import register_ai_action, ActionContext
+except ImportError:
+    register_ai_action = None
+
 
 try:
     from plugins.miku_menu import register_plugin_info
@@ -789,6 +794,151 @@ async def _get_nickname_async(bot: Bot, user_id: str) -> str:
     except Exception:
         pass
     return user_id
+
+
+# ============================================================
+# AI 动作（查看排行）
+# ============================================================
+_RANK_KINDS = ("消息", "功能", "插件", "好感", "金币")
+
+_RANK_KIND_ALIASES = (
+    ("金币", ("金币", "富豪", "有钱", "钱最多", "暴富", "身价")),
+    ("好感", ("好感", "喜欢我", "亲密度")),
+    ("插件", ("插件",)),
+    ("功能", ("功能", "命令", "用的多", "用得多")),
+    ("消息", ("消息", "发言", "活跃", "话最多")),
+)
+
+_RANK_PATTERNS = [
+    # 带类别词：「消息排行」「金币排行榜」「好感排名」
+    r"^(?:看看|查一下|查查|帮我查|现在的?)?(?P<kind>消息|发言|功能|插件|好感|金币)(?:度)?(?:排行|排名|榜)(?:榜)?(?:呢|啊)?[?？]?$",
+    r"^(?:看看|查一下|查查|帮我查|现在的?)?(?P<kind>好感|金币)(?:度)?(?:最多|最高|最多的是谁)(?:呢|啊)?[?？]?$",
+    # 别名说法（没有类别词，由 handler 从原文推断）
+    r"^(?:看看|查一下|查查|现在)?(?:谁最活跃|谁话最多|谁说话最多|最活跃)(?:呢|啊)?[?？]?$",
+    r"^(?:看看|查一下|查查|现在)?(?:谁最有钱|谁钱最多|谁金币最多|富豪榜|富豪排名|金币榜)(?:呢|啊)?[?？]?$",
+    r"^(?:看看|查一下|查查|现在)?(?:谁最喜欢我|谁好感最高|谁好感度最高|好感榜)(?:呢|啊)?[?？]?$",
+    r"^(?:看看|查一下|查查|现在)?(?:谁用的多|谁用得多|功能榜)(?:呢|啊)?[?？]?$",
+    r"^(?:看看|查一下|查查|现在)?(?:排行|排行榜|排名|榜单?)(?:呢|啊)?[?？]?$",
+]
+
+
+def _infer_rank_kind(text: str) -> str:
+    """规则命中但没有类别参数时，从原文猜测用户想看哪一种排行。"""
+    body = str(text or "")
+    for kind, words in _RANK_KIND_ALIASES:
+        if any(word in body for word in words):
+            return kind
+    return "消息"
+
+
+def _get_cmd_rank_items() -> List[tuple]:
+    """功能调用排行数据：优先用 _get_cmd_rank_data，缺失时按现有数据结构兜底。"""
+    getter = globals().get("_get_cmd_rank_data")
+    if callable(getter):
+        try:
+            return getter()
+        except Exception:
+            pass
+    data = _load_cmd_stats()
+    items = []
+    for user_id, stats in data.items():
+        if not isinstance(stats, dict):
+            continue
+        total = int(stats.get("__total__", 0) or 0)
+        if total > 0:
+            items.append((user_id, total, ""))
+    items.sort(key=lambda x: x[1], reverse=True)
+    return items
+
+
+async def _build_rank_text_by_kind(bot: Bot, kind: str,
+                                   group_id: Optional[str] = None) -> str:
+    """按类别构建排行文本（复用现有排行数据函数与 _build_rank_text）。"""
+    if kind not in _RANK_KINDS:
+        kind = "消息"
+
+    if kind == "消息":
+        items = _get_msg_rank_data(group_id=group_id)
+        if not items:
+            return "🎵 消息排行\n━━━━━━━━━━━━\n暂无数据，多发点消息再来查看吧~"
+        title = "群消息排行" if group_id else "全群消息排行"
+        unit = " 条"
+    elif kind == "功能":
+        items = _get_cmd_rank_items()
+        if not items:
+            return "🎵 功能调用排行\n━━━━━━━━━━━━\n暂无数据，多使用功能再来查看吧~"
+        title, unit = "功能调用排行", " 次"
+    elif kind == "插件":
+        items = _get_plugin_rank_data()
+        if not items:
+            return "🎵 插件调用排行\n━━━━━━━━━━━━\n暂无数据~"
+        try:
+            from plugins.miku_menu import get_plugin_info
+            rows = [
+                (get_plugin_info(plugin_name).get("name", plugin_name), count, extra)
+                for plugin_name, count, extra in items[:_top_count()]
+            ]
+        except Exception:
+            rows = items[:_top_count()]
+        return _build_rank_text("插件调用排行", rows, " 次")
+    elif kind == "好感":
+        items = _get_favor_rank_data()
+        if not items:
+            return "🎵 好感度排行\n━━━━━━━━━━━━\n暂无数据，多和Miku聊天吧~"
+        title, unit = "好感度排行", ""
+    else:  # 金币
+        items = _get_coins_rank_data()
+        if not items:
+            return "🎵 金币排行\n━━━━━━━━━━━━\n暂无数据，多签到获取金币吧~"
+        title, unit = "金币富豪榜", " 金币"
+
+    rows = []
+    for user_id, value, extra in items[:_top_count()]:
+        nick = await _get_nickname_async(bot, user_id)
+        # 消息排行的文字版原本就带「QQ 号」副标题，其它榜保持原样
+        rows.append((nick, value, extra or (f"QQ {user_id}" if kind == "消息" else "")))
+    return _build_rank_text(title, rows, unit)
+
+
+async def _ai_stats_rank(ctx: "ActionContext") -> dict:
+    """AI 动作：查看消息/功能/插件/好感/金币排行。"""
+    if not _is_enabled():
+        return {"status": "skip"}
+
+    kind = ctx.arg_str("kind", "") or _infer_rank_kind(ctx.text)
+    try:
+        text = await _build_rank_text_by_kind(ctx.bot, kind, ctx.group_id or None)
+    except Exception as e:
+        logger.exception(f"[miku_stats] AI 动作生成排行失败: {e}")
+        return {"status": "error", "reply": "呜...排行榜获取失败了，等一下再试试吧～"}
+
+    await ctx.emit(text)
+    return {"status": "ok"}
+
+
+if register_ai_action is not None:
+    register_ai_action(
+        "stats.rank",
+        plugin="miku_stats",
+        plugin_display="统计与排行",
+        description="查看排行榜（消息/功能/插件/好感/金币）",
+        handler=_ai_stats_rank,
+        params={
+            "kind": {
+                "type": "string",
+                "required": False,
+                "desc": "排行类别",
+                "enum": ["消息", "功能", "插件", "好感", "金币"],
+            },
+        },
+        examples=["谁最活跃", "金币排行", "谁最喜欢我"],
+        patterns=_RANK_PATTERNS,
+        keywords=[
+            "最活跃", "排行", "谁最有钱", "谁最喜欢我", "富豪榜",
+        ],
+        mode="action",
+        order=37,
+    )
 
 
 # ── 管理员作弊指令 ───────────────────────────────────────────

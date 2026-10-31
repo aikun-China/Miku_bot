@@ -588,6 +588,139 @@ async def _stop_scheduler() -> None:
         _scheduler.shutdown(wait=False)
 
 
+# ============================================================
+# AI 动作注册（把已有总结能力暴露给 miku_ai 路由层）
+# ============================================================
+
+try:
+    from utils.ai_actions import register_ai_action, ActionContext
+except ImportError:  # 动作注册中心不可用时静默降级
+    register_ai_action = None
+    ActionContext = object  # type: ignore[assignment,misc]
+
+# 「总结」命令是 priority=5 + block=True，以「总结」开头的消息会先被命令吃掉
+# （block=True 会 stop_propagation，路由层根本不会执行）。所以这里只匹配
+# 「总结 xxx」命令覆盖不到的自然语言问法。
+_SUMMARY_PATTERNS = [
+    # 帮我总结一下最近的聊天 / 帮我概括一下今天的群聊
+    # 必须以非命令词开头：「总结 xxx」由 priority=5 的命令处理，这里不抢
+    r"^(?:能不能|可不可以|可以|帮我|帮忙|麻烦你?|请)\s*"
+    r"(?:总结|概括|汇总|复盘|梳理)(?:一下|下)?\s*"
+    r"(?:刚才|刚刚|今天|昨天|最近|这会儿)?\s*(?:的)?\s*"
+    r"(?:群聊|聊天|消息|记录|内容)?\s*$",
+    # 刚才聊了啥 / 群里都聊了什么 / 今天群里在聊什么 / 刚才群里都聊啥了
+    r"^(?:刚才|刚刚|今天|昨天|最近|这会儿|大家|大伙|群里|群友们)\s*"
+    r"(?:大家|大伙|群(?:里|友们?)?)?\s*(?:刚才|刚刚|今天|最近)?\s*(?:都|在|又)?\s*"
+    r"(?:聊|说|讨论)(?:了|过)?(?:些|点)?\s*(?:啥|什么|啥呢|什么呢)\s*(?:了|呀|啊|呢)?\s*$",
+    # 帮我看看刚才大家都聊了啥
+    r"^(?:帮我|麻烦|请)?\s*(?:看看|看一下|瞅瞅|了解下|打听下)\s*"
+    r"(?:刚才|刚刚|今天|最近)?\s*(?:大家|大伙|群里|群友们)?\s*(?:都|在)?\s*"
+    r"(?:聊|说|讨论)(?:了|过)?(?:些|点)?\s*(?:啥|什么|啥呢)\s*(?:了|呢)?\s*$",
+]
+
+
+async def _ai_summary_run(ctx: ActionContext) -> dict:
+    """AI 动作：复用现有总结核心，对当前群聊做一次总结。"""
+    if str(_config("enabled", True)).strip().lower() in ("false", "0", "no", ""):
+        return {"status": "skip"}
+
+    event = ctx.event
+    if not isinstance(event, GroupMessageEvent):
+        return {"status": "error", "reply": "群聊总结要在群里用哦～"}
+
+    group_id = event.group_id
+    minimum = int(_config("min_messages", 50) or 50)
+    maximum = min(int(_config("max_messages", 1000) or 1000), 200)
+    requested = ctx.arg_int("count", 0)
+    if requested <= 0:
+        count = maximum
+    elif not minimum <= requested <= maximum:
+        return {
+            "status": "error",
+            "reply": f"❌ 消息数量需在 {minimum} 到 {maximum} 之间",
+        }
+    else:
+        count = requested
+
+    cooldown = max(0, int(_config("cooldown_seconds", 60) or 0))
+    cooldown_key = str(ctx.user_id)
+    now = time.monotonic()
+    remaining = cooldown - (now - _last_summary_time.get(cooldown_key, 0))
+    if cooldown and remaining > 0:
+        return {"status": "error", "reply": f"⏳ 总结冷却中，请 {int(remaining) + 1} 秒后再试"}
+
+    style = ctx.arg_str("style") or state.get_style(group_id)
+    _last_summary_time[cooldown_key] = now
+    record_plugin_usage(
+        "miku_summary_group",
+        user_id=cooldown_key,
+        command_name="总结",
+    )
+
+    await ctx.emit(f"📝 正在总结群 {group_id} 最近 {count} 条消息...")
+    try:
+        summary = await _run_summary(ctx.bot, group_id, count, style=style)
+    except Exception as e:
+        logger.warning(f"[miku_summary_group] AI 动作总结失败 (group={group_id}): {e}")
+        return {"status": "error", "reply": f"❌ 总结失败：{e}"}
+
+    # 输出方式与「总结」命令保持一致（图片优先、可回退文本），但统一走 ctx.emit
+    output_type = str(_config("summary_output_type", "image") or "image").lower()
+    if output_type != "text":
+        try:
+            from utils.screenshot import screenshot_html, to_image_uri
+
+            image_path = await screenshot_html(
+                core.render_html(
+                    summary,
+                    group_id,
+                    count,
+                    str(_config("summary_theme", "dark") or "dark"),
+                ),
+                width=850,
+                height=600,
+            )
+            await ctx.emit(MessageSegment.image(to_image_uri(str(image_path))))
+            return {"status": "ok"}
+        except Exception as e:
+            logger.warning(f"[miku_summary_group] AI 动作总结图片输出失败: {e}")
+            if not bool(_config("summary_fallback_enabled", True)):
+                return {"status": "error", "reply": "❌ 总结图片生成失败"}
+
+    await ctx.emit(Message(summary[:4500]))
+    return {"status": "ok"}
+
+
+if register_ai_action is not None:
+    register_ai_action(
+        "summary.run",
+        plugin="miku_summary_group",
+        plugin_display="群聊总结",
+        description="对当前群聊最近的消息做一次总结（不用「总结」命令的说法）",
+        handler=_ai_summary_run,
+        params={
+            "count": {
+                "type": "int",
+                "required": False,
+                "desc": "总结最近多少条消息",
+                "max_len": 4,
+            },
+            "style": {
+                "type": "string",
+                "required": False,
+                "desc": "总结风格要求",
+                "max_len": 20,
+            },
+        },
+        examples=["刚才聊了啥", "帮我总结一下最近的聊天"],
+        patterns=_SUMMARY_PATTERNS,
+        keywords=["刚才聊", "聊了啥", "聊了什么", "群里都聊", "在聊什么", "总结一下最近"],
+        mode="action",
+        scope="group",
+        order=33,
+    )
+
+
 register_plugin_info(
     "miku_summary_group",
     name="Miku群聊总结",

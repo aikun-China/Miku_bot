@@ -417,10 +417,11 @@ async def _recognize_with_platform(platform: Dict[str, str], image_data_uri: str
     logger.info(f"[miku_ai] 调用识图API: 平台={name} 模型={model}")
 
     url = platform["base_url"] + "/chat/completions"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {platform['api_key']}",
-    }
+    headers = {"Content-Type": "application/json"}
+    # 本地平台无 API Key：拼出 "Bearer "（尾部空格）会被 httpx 判为非法头直接拒发
+    api_key = str(platform.get("api_key", "") or "").strip()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     
     try:
         body = {

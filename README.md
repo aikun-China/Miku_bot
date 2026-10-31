@@ -2,12 +2,10 @@
 
 基于 **NoneBot2** 框架的 QQ 群机器人。
 
-[![许可证：AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
-
-本项目采用 **GNU Affero 通用公共许可证第 3 版（AGPL-3.0）** 发布。使用、修改或分发本项目时，请遵守 [AGPL-3.0 许可证条款](LICENSE)。
-
 ## 功能特性
 
+- **功能丰富**：点歌、天气、签到、商店、排行榜、群管理、B 站解析、群聊总结等 20+ 插件
+- **AI 插件调度**：用自然语言触发插件能力（点歌/天气/签到/排行/商店等），规则优先、AI 兜底，花钱动作二次确认
 - **截图引擎**：使用系统 **Edge** 浏览器渲染 HTML 模板生成图片（Playwright `channel="msedge"`），无需下载 Chromium
 - **YAML 配置管理**：`config/bot.yaml` 管理插件配置，`config/ai_models.yaml` 独立管理全局 AI 模型连接
 - **依赖自动检测**：启动前自动检测 `.venv` 依赖，缺失则自动安装
@@ -29,19 +27,24 @@ miku_bot/
 │   └── 缓存清理任务
 ├── start.bat                       # Windows 启动脚本
 ├── start.sh                        # Linux/Mac/Git Bash 启动脚本
+├── .env                            # 环境变量（SUPERUSERS、WEBUI_PASSWORD）
+├── .env.dev / .env.prod            # 开发/生产环境
 ├── requirements.txt                # Python 依赖
 ├── pyproject.toml                  # NoneBot 项目配置
-├── uv.lock                         # 锁定的依赖版本
 │
 ├── plugins/                         # 全部插件（管理、娱乐、订阅等）
-│   └── miku_admin/                  # 管理员插件
-│       ├── 重启 Bot
-│       ├── 配置检查（查看 SUPERUSERS、密码、端口、已注册插件）
-│       ├── 刷新配置（热加载 bot.yaml）
-│       └── 启动通知（私聊超级用户）
+│   ├── miku_admin/                  # 管理员插件
+│   │   ├── 重启 Bot
+│   │   ├── 配置检查（查看 SUPERUSERS、密码、端口、已注册插件）
+│   │   ├── 刷新配置（热加载 bot.yaml）
+│   │   └── 启动通知（私聊超级用户）
+│   └── miku_ai/                     # AI 聊天 + 插件调度
+│       ├── router.py                # 插件动作路由（规则 → AI 判定 → 执行）
+│       └── ai_actions.py            # AI 自身动作（记忆 / 好感度）
 │
 ├── utils/                           # 底层工具
 │   ├── screenshot.py                # 截图引擎（Edge / HTML→图片）
+│   ├── ai_actions.py                # AI 动作注册表（插件能力 → AI 可调用）
 │   ├── check_deps.py                # 依赖检测 + 自动安装
 │   ├── deps_config.py               # 依赖配置（从 requirements.txt 解析）
 │   ├── config_manager.py            # YAML 配置管理（bot.yaml）
@@ -56,9 +59,13 @@ miku_bot/
 │
 ├── version.json                     # 版本信息（自动维护）
 │
-├── config/                          # 本地运行配置（首次启动时生成，不提交）
-├── data/                            # 本地用户数据和缓存（不提交）
-├── logs/                            # 本地运行日志（不提交）
+├── config/                          # 配置文件
+│   ├── bot.yaml                     # 插件统一配置（YAML 格式）
+│   └── ai_models.yaml               # 全局 AI 平台列表（含本地模型）
+├── data/                            # 数据目录
+│   └── images/                      # 截图输出
+├── logs/                            # 日志目录
+│   └── bot_YYYY-MM-DD.log           # 按天轮转日志
 └── ...
 ```
 
@@ -70,44 +77,44 @@ miku_bot/
 
 - 系统已安装 **Microsoft Edge**（Windows 10/11 默认已安装）
 - 系统已安装 **Python 3.10+**
-- 已安装 [uv](https://docs.astral.sh/uv/)
 
-### 方式一：运行 start.bat（Windows）
+### 方式一：双击 start.bat（Windows）
 
-在仓库根目录双击 `start.bat`，或在终端中运行：
-
-```bat
-.\start.bat
+```
+D:\qqbot\miku_bot\start.bat
 ```
 
 脚本自动完成：
-1. 使用 `uv sync` 按 `uv.lock` 安装依赖
-2. 检测 Edge 浏览器
-3. 启动 Bot
+1. 检测 `.venv` 虚拟环境
+2. 检测依赖（缺失则自动 `pip install`）
+3. 检测 Edge 浏览器
+4. 启动 Bot
 
-首次启动会弹出配置向导，管理员 QQ 号和 WebUI 密码由你在本机输入：
+首次启动会弹出配置向导：
 
 ```
 ==================================================
          MikuBot 首次配置向导
 ==================================================
 [步骤 1/2] 设置管理员 QQ 号
-  请输入你的 QQ 号: <你的 QQ 号>
-  [OK] 管理员 QQ 号已设置
+  请输入你的 QQ 号: 123456789
+  [OK] 管理员 QQ 号已设置为: 123456789
 
 [步骤 2/2] 设置 WebUI 登录密码
   WebUI 直接密码登录，不需要账号/用户名
-  请输入密码: <你设置的密码>
+  请输入密码: MySecret
   [OK] WebUI 密码已设置
 ```
 
 ### 方式二：命令行启动
 
 ```bash
-# Windows cmd / PowerShell，在仓库根目录运行
-uv run python bot.py
+# Windows cmd
+cd D:\qqbot\miku_bot
+.venv\Scripts\python.exe bot.py
 
-# Linux / macOS / Git Bash，在仓库根目录运行
+# Git Bash
+cd /d/qqbot/miku_bot
 bash start.sh
 ```
 
@@ -119,12 +126,12 @@ bash start.sh
 
 | 文件 | 用途 | 修改方式 |
 |------|------|----------|
-| `.env` | 本地环境变量（SUPERUSERS、WEBUI_PASSWORD、端口） | 首次启动向导创建；不要提交到 Git |
-| `config/bot.yaml` | 插件运行时配置（按插件分区） | 首次运行时生成；发送「刷新配置」热加载 |
-| `config/ai_models.yaml` | 全局 AI 平台列表及本地模型连接配置 | 在管理后台配置；API Key 只保存在本地，不要提交到 Git |
+| `.env` | 环境变量（SUPERUSERS、WEBUI_PASSWORD、端口） | 首次启动向导自动填写，或手动编辑 |
+| `config/bot.yaml` | 插件运行时配置（按插件分区） | 发送「刷新配置」热加载，或手动编辑后 reload |
+| `config/ai_models.yaml` | 全局 AI 平台列表（云端/本地模型统一管理） | 管理后台「配置编辑」中的「全局 AI 模型」标签，或「插件管理 → AI聊天 → 设置」中的平台列表；保存后即时生效 |
 
-这些文件包含本机设置，仓库不会提供真实配置。旧版 `miku_ai.ai_platforms` 和 `local_*` 配置会在首次加载时自动迁移到 `config/ai_models.yaml`，其余插件设置仍保留在 `bot.yaml`。
-AI聊天插件设置中的平台列表只显示平台名称；点击名称可在二级弹窗中查看/修改 API Key、Base URL、多模态模型及纯文本模型，也可新增或删除平台。
+旧版 `miku_ai.ai_platforms` 和 `local_*` 配置会在首次加载时自动迁移到 `config/ai_models.yaml`；其中 `local_*` 本地模型会迁移成平台列表里的「本地模型」条目，其余插件设置仍保留在 `bot.yaml`。
+AI聊天插件设置中的 AI 平台区域位于配置顶部，列表只显示平台名称；点击名称可在二级弹窗中查看/修改 API Key、Base URL、模型名及纯文本模型，也可新增、删除或拖动平台左侧把手调整顺序（顺序自动保存）。本地模型（Ollama / LM Studio 等 OpenAI 兼容服务）用「＋ 添加本地模型」添加：Base URL 填本机地址（如 `http://localhost:11434/v1`），API Key 可留空，并和云端平台一样按列表顺序参与故障转移。
 
 ### 插件配置注册（代码示例）
 
@@ -165,6 +172,80 @@ config_manager.set("miku_admin", "notify_on_start", False)
 ```
 
 Bot 重新读取 `config/bot.yaml`，无需重启。
+
+---
+
+## AI 插件调度（让 AI 自主判断该调哪个插件）
+
+插件的现有能力可以被 AI「理解意图 → 选择动作 → 提取参数 → 执行」。例如：
+
+| 用户说 | 实际执行 |
+|---|---|
+| 唱一首春日影 / 给我放首周杰伦 | 点歌（本地 → 网易云 → QQ音乐） |
+| 今天天气怎么样 / 东京会下雨吗 | 天气查询（数据交给 AI 自然作答） |
+| 帮我签个到 / 打个卡 | 每日签到 |
+| 我有多少金币 / 我签到了几天 | 个人资料 |
+| 谁最活跃 / 谁最有钱 | 排行榜 |
+| 你会什么 / 有什么功能 | 菜单 |
+| 帮我买个双倍好感卡 | 商店（先问确认，回「确认」才扣金币） |
+| 拍一下他 / 帮我戳一下他 | 拍一拍 |
+| 刚才聊了啥 / 群里都聊了什么 | 群聊总结 |
+| 查成分 某UP主 / 帮我拿一下视频封面 BV… | B站成分查询 / 封面 |
+| 帮我跟管理员反馈一下… | 通知管理员 |
+| 记一下我喜欢喝可乐 / 你还记得我什么 | 长期记忆 |
+| 我的好感度是多少 / 我跟你关系怎么样 | 好感度查询 |
+
+### 工作方式
+
+1. **命令优先**：消息能被现有 `on_command` 命中时，路由层直接让路，不会和命令重复执行；
+2. **规则优先**：每个动作自带正则/关键词，命中即执行，零延迟零成本；
+3. **AI 兜底**：规则没命中时，把「动作清单 + 参数说明」交给小模型，只让它输出一行 JSON；超时、置信度低于阈值、输出不合法都退回普通聊天；
+4. **缺参数追问**：如「唱一首」没说歌名，会追问并在 60 秒内等你补充；
+5. **二次确认**：花钱动作先问一句，回「确认」才执行。
+
+### 配置（`config/bot.yaml` → `miku_ai`）
+
+| 配置项 | 默认 | 说明 |
+|---|---|---|
+| `plugin_router_enabled` | `true` | 总开关 |
+| `plugin_router_keyword_only` | `true` | `true`=只对命中关键词/正则的消息做 AI 判定（省 token）；`false`=每条消息都判定 |
+| `plugin_router_confidence` | `0.75` | 置信度阈值，低于此值当普通聊天 |
+| `plugin_router_timeout` | `10` | AI 判定超时（秒） |
+| `plugin_router_actions` | `[]` | 动作白名单，留空=允许全部已注册动作 |
+| `plugin_router_group_ambient` | `false` | 群聊不 @Bot 时是否也判断（默认关，避免群友聊天被误触发） |
+| `plugin_router_ack` | `false` | 命中动作后是否先回一句「好呀～」 |
+| `plugin_router_followup_seconds` | `60` | 缺参数追问的有效期（秒） |
+| `plugin_router_action_timeout` | `180` | 动作执行超时（秒，点歌下载需放宽） |
+
+### 新增一个可被 AI 调用的动作
+
+`utils/ai_actions.py` 是动作注册表，插件加载时注册即可：
+
+```python
+from utils.ai_actions import ActionContext, register_ai_action
+
+async def _ai_demo(ctx: ActionContext) -> dict:
+    await ctx.emit(f"收到参数：{ctx.arg_str('word')}")
+    return {"status": "ok"}
+
+register_ai_action(
+    "demo.show", plugin="miku_demo", description="演示动作",
+    handler=_ai_demo,
+    params={"word": {"type": "string", "required": True, "desc": "关键词",
+                     "ask": "要什么词呀？"}},
+    patterns=[r"^演示\s*(?P<word>.+)$"],
+    examples=["演示 你好"],
+)
+```
+
+**安全约定**：只有显式注册的动作 AI 才看得到；参数按定义清洗（未声明丢弃、超长截断、枚举校验）；
+花钱/破坏性动作必须 `confirm=True`；管理类动作（重启/更新/广播/禁言/踢人/退群）不注册。
+
+### 验证
+
+```bash
+PYTHONIOENCODING=utf-8 .venv/Scripts/python.exe temp_test/test_ai_router.py
+```
 
 ---
 
@@ -229,6 +310,7 @@ Bot 启动时自动替换 NoneBot 默认日志为自定义格式：
 - **消息截断**：过长 dict 事件自动截断到 300 字符，保留关键信息
 - **心跳过滤**：自动丢弃 `notice.notify.input_status` 等高频事件
 - **文件轮转**：按天保存到 `logs/bot_YYYY-MM-DD.log`，保留 30 天
+- **WebUI 监听检查**：每 30 秒检查一次 WebUI TCP 端口；中断、持续失败、恢复及应用关闭生命周期都会记录，Bot 重启日志会标明触发来源
 
 ---
 
@@ -320,14 +402,21 @@ Bot 自动下载最新代码并重启：
 
 ## 分发部署
 
-从 GitHub 获取代码后，在仓库根目录运行 `start.bat`（Windows）或 `bash start.sh`（Linux/macOS/Git Bash）。启动脚本会根据 `uv.lock` 创建本机虚拟环境并安装依赖；首次启动时按向导配置本机账号和密码。不要分发或提交 `.env`、`config/` 中的本机配置、Cookie 或 API Key。
+项目文件夹（含 `.venv`）可直接打包发给其他人：
+
+1. 所有依赖安装在项目目录 `.venv` 中，不依赖系统 Python
+2. 双击 `start.bat` 即可自动检测并启动
+3. 首次启动会弹出交互式配置向导
+4. 截图使用系统 Edge，无需额外下载浏览器
 
 ---
 
-## 贡献
+## 后续计划
 
-欢迎通过 GitHub Issues 反馈问题，或提交 Pull Request。
-
-## 许可证
-
-本项目根据 [GNU Affero 通用公共许可证第 3 版（AGPL-3.0）](LICENSE) 授权。
+- [x] AI 对话（云端/本地多平台故障转移、识图、好感度、长期记忆）
+- [x] 插件调度：AI 自主判断该调用哪个插件（19 个动作）
+- [x] 数据库 + 签到/好感度系统
+- [x] WebUI 管理面板（密码登录）
+- [ ] 插件索引市场（plugins_index 扩展）
+- [ ] 原生 function calling（tools 协议），替代当前的 JSON 判定
+- [ ] 更细粒度的动作权限（按群/按用户组开关）

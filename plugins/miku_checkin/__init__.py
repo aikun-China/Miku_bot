@@ -40,6 +40,11 @@ from utils.bg_helper import find_and_load_bg
 from utils.config_manager import config_manager
 from utils.avatar_cache import get_avatar_data_uri
 
+try:
+    from utils.ai_actions import register_ai_action, ActionContext
+except ImportError:
+    register_ai_action = None
+
 SHOP_ITEMS = [
     {
         "name": "双倍好感卡",
@@ -256,12 +261,16 @@ def _build_reward_html(result: dict) -> str:
 
 
 # ============================================================
-# 签到主逻辑
+# 签到主逻辑（命令与 AI 动作共用）
 # ============================================================
-@checkin_cmd.handle()
-async def _checkin_handle(bot, event):
+async def _run_checkin(bot, event, emit) -> bool:
+    """执行签到并通过 emit 发送卡片。返回是否成功发出消息。
+
+    命令入口传 emit=checkin_cmd.finish（保持原有 finish 行为）；
+    AI 动作传 emit=ctx.emit（不抛 FinishedException）。
+    """
     if not _is_enabled():
-        return
+        return False
 
     user_id = str(event.get_user_id())
 
@@ -277,7 +286,7 @@ async def _checkin_handle(bot, event):
         )
     except Exception as e:
         logger.exception(f"[签到] 用户数据处理失败：{e}")
-        return
+        return False
 
     # 2) 随机语录
     quote_text, quote_source = random_quote()
@@ -318,12 +327,77 @@ async def _checkin_handle(bot, event):
         )
 
         img_path = await screenshot_html(html, width=CARD_WIDTH, height=CARD_HEIGHT)
-        await checkin_cmd.finish(MessageSegment.image(to_image_uri(str(img_path))))
+        await emit(MessageSegment.image(to_image_uri(str(img_path))))
+        return True
     except FinishedException:
-        # finish() 会抛这个异常结束处理，属于正常流程，不是错误
-        pass
+        # 命令路径下 finish() 会抛这个异常结束处理，属于正常流程，不是错误
+        return True
     except Exception as e:
         logger.exception(f"[签到] 生成图片失败：{e}")
+    return False
+
+
+@checkin_cmd.handle()
+async def _checkin_handle(bot, event):
+    await _run_checkin(bot, event, checkin_cmd.finish)
+
+
+# ============================================================
+# AI 动作（签到）
+# ============================================================
+_CHECKIN_COMMAND_TEXTS = {"签到", "checkin", "每日签到", "打卡", "每日打卡"}
+
+# 口语说法：「帮我签个到」「签一下到」「打个卡」
+_CHECKIN_PATTERNS = [
+    r"^(?:帮我|给我|麻烦|请)?\s*(?:去)?\s*签\s*(?:个|一个|一下|一|下)?\s*到(?:吧|呀|啊|呗)?[?？]?$",
+    r"^(?:帮我|给我|麻烦|请)?\s*(?:去)?\s*打\s*(?:个|一个|一下|一|下)?\s*卡(?:吧|呀|啊|呗)?[?？]?$",
+]
+
+
+def _is_checkin_command_text(text: str) -> bool:
+    """这句话本身就是签到命令时返回 True（命令路径会处理，避免重复发卡片）。"""
+    body = str(text or "").strip()
+    for prefix in ("/", "!", "！", "／"):
+        if body.startswith(prefix):
+            body = body[len(prefix):].strip()
+            break
+    return body.lower() in _CHECKIN_COMMAND_TEXTS
+
+
+async def _ai_checkin(ctx: "ActionContext") -> dict:
+    """AI 动作：复用签到主逻辑，发送走 ctx.emit。"""
+    if not _is_enabled():
+        return {"status": "skip"}
+
+    # 与命令完全同名的说法交给 on_command，避免同一句话发两次签到卡片
+    if _is_checkin_command_text(ctx.text):
+        return {"status": "skip"}
+
+    try:
+        sent = await _run_checkin(ctx.bot, ctx.event, ctx.emit)
+    except Exception as e:
+        logger.exception(f"[签到] AI 动作执行失败：{e}")
+        return {"status": "error", "reply": "签到失败了，等一下再试试吧～"}
+
+    if not sent:
+        return {"status": "error", "reply": "签到失败了，等一下再试试吧～"}
+    return {"status": "ok"}
+
+
+if register_ai_action is not None:
+    register_ai_action(
+        "checkin.do",
+        plugin="miku_checkin",
+        plugin_display="每日签到",
+        description="执行每日签到，领取金币和好感度",
+        handler=_ai_checkin,
+        params={},
+        examples=["帮我签到", "今天还没打卡呢"],
+        patterns=_CHECKIN_PATTERNS,
+        keywords=["签到", "打卡"],
+        mode="action",
+        order=36,
+    )
 
 
 # ─── 菜单注册 ───

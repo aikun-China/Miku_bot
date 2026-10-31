@@ -55,6 +55,8 @@ from .data_source import (
     process_chat, split_reply_segments, save_history_async,
     get_history_manager, build_system_prompt,
 )
+from . import router as plugin_router
+from . import ai_actions as _ai_actions  # noqa: F401  注册 miku_ai 自身动作（记忆/好感度）
 from .emoji_library import EmojiLibrary
 from .vision import clean_image_url
 from .memory_store import MemoryStore, build_namespaces
@@ -62,58 +64,17 @@ from .memory_store import MemoryStore, build_namespaces
 
 _driver = get_driver()
 
-# ── 按会话维度的消息处理队列 ──
-# 同一会话（群/私聊）的消息排队执行，避免并发导致的历史记录混乱和API超限
-_session_locks: Dict[str, asyncio.Lock] = {}
-_session_queue_count: Dict[str, int] = {}  # 每个会话的待处理消息数
-_session_locks_lock = asyncio.Lock()
-
-
-async def _get_session_lock(session_id: str) -> asyncio.Lock:
-    """获取指定会话的锁，不存在则创建"""
-    async with _session_locks_lock:
-        if session_id not in _session_locks:
-            _session_locks[session_id] = asyncio.Lock()
-        return _session_locks[session_id]
-
-
-def _get_max_queue(is_group: bool) -> int:
-    """获取对应会话类型的队列深度上限"""
-    if is_group:
-        return int(get_config("group_max_queue", 3) or 3)
-    return int(get_config("private_max_queue", 5) or 5)
-
-
-async def _try_enqueue(session_id: str, max_depth: int) -> bool:
-    """尝试入队，返回 True=可入队，False=队列已满"""
-    async with _session_locks_lock:
-        count = _session_queue_count.get(session_id, 0)
-        if count >= max_depth:
-            return False
-        _session_queue_count[session_id] = count + 1
-        return True
-
-
-async def _dequeue(session_id: str):
-    """出队，并清理闲置锁"""
-    async with _session_locks_lock:
-        count = _session_queue_count.get(session_id, 0)
-        if count <= 1:
-            _session_queue_count.pop(session_id, None)
-            # 锁无人等待时清理，避免内存泄漏
-            lock = _session_locks.get(session_id)
-            if lock and not lock.locked():
-                _session_locks.pop(session_id, None)
-        else:
-            _session_queue_count[session_id] = count - 1
-
-
 @_driver.on_startup
 async def _on_startup():
     EmojiLibrary.init_db()
     MemoryStore.init_db()
     if bool(get_config("emoji_auto_cleanup", True)):
         EmojiLibrary.cleanup_old()
+    # 打印 AI 插件动作注册情况，方便排查「为什么 AI 不点歌」
+    try:
+        plugin_router.log_registered_actions()
+    except Exception as e:
+        logger.warning(f"[miku_ai] 打印插件动作清单失败: {e}")
     logger.info("[miku_ai] 插件已加载")
 
 
@@ -134,6 +95,11 @@ register_plugin_info(
 
 【私聊】直接发消息即可对话
 【群聊】@Bot 后对话
+
+【自然语言调用插件】
+  说「唱一首春日影」「今天天气怎么样」「帮我签个到」「谁最有钱」
+  Miku 会自动判断该用哪个插件并帮你执行；
+  花钱动作（商店购买/使用道具）会先问一句，回复「确认」才执行。
 
 【命令】
   清空聊天记录 - 清空当前会话记录
@@ -282,45 +248,76 @@ async def _handle_record(bot: Bot, event: MessageEvent):
 _chat_matcher = on_message(rule=Rule(_is_talking_to_bot), priority=10, block=False)
 
 
+def _should_route_ambient(bot: Bot, event: MessageEvent) -> bool:
+    """群聊不 @Bot 时的动作路由：只对命中动作规则的消息生效，绝不闲聊。
+
+    默认关闭（plugin_router_group_ambient），避免群友互相聊天被误触发点歌。
+    """
+    try:
+        if not isinstance(event, GroupMessageEvent):
+            return False
+        if not bool(get_config("plugin_router_group_ambient", False)):
+            return False
+        # 已经 @Bot 的消息由 _chat_matcher 处理，这里跳过避免重复执行
+        # （部分协议端不设 to_me，所以再手动扫一遍 at 段）
+        if getattr(event, "to_me", False):
+            return False
+        bot_self_id = str(getattr(bot, "self_id", ""))
+        for seg in event.get_message():
+            if seg.type == "at" and str(seg.data.get("qq", "")) == bot_self_id:
+                return False
+        text, _, _, _ = _extract_text_and_images(event)
+        if not text:
+            return False
+        return plugin_router.has_rule_candidate(text, is_group=True, event=event)
+    except Exception:
+        return False
+
+
+_ambient_matcher = on_message(rule=Rule(_should_route_ambient), priority=20, block=False)
+
+
+@_ambient_matcher.handle()
+async def _handle_ambient(bot: Bot, event: MessageEvent):
+    text, _, _, _ = _extract_text_and_images(event)
+    if not text:
+        return
+    try:
+        route = await plugin_router.route_by_rules(
+            bot, event, text, str(event.user_id),
+            str(getattr(event, "group_id", "")), True,
+        )
+    except Exception as e:
+        logger.warning(f"[miku_ai] ambient 动作路由失败: {type(e).__name__}: {e}")
+        return
+    if route.kind == "ask" and route.text:
+        await _ambient_matcher.finish(route.text)
+    if route.kind == "done":
+        await _ambient_matcher.finish()
+
+
+
 @_chat_matcher.handle()
 async def _handle_chat(bot: Bot, event: MessageEvent, state: T_State):
-    # ── 按会话排队，同会话消息一个一个处理 ──
-    user_id = str(event.user_id)
-    group_id = str(event.group_id) if isinstance(event, GroupMessageEvent) else ""
-    session_id = f"g{group_id}" if group_id else f"u{user_id}"
-
-    # 队列深度检查，防刷屏（群聊/私聊不同上限）
-    is_group = bool(group_id)
-    max_depth = _get_max_queue(is_group)
-    if not await _try_enqueue(session_id, max_depth):
-        logger.info(f"[miku_ai] 会话{session_id}队列已满，丢弃消息")
+    # 每条符合回复规则的消息独立处理；模型并发由 _call_ai_api 按模型分配。
+    # 开启动作路由时放宽总超时：点歌下载等动作可能远超聊天的 120s
+    timeout = 120
+    if bool(get_config("plugin_router_enabled", True)):
         try:
-            await _chat_matcher.send("主人发太快啦，Miku跟不上啦～等一下再说吧！")
+            timeout = max(120, int(get_config("plugin_router_action_timeout", 180) or 180) + 30)
+        except (TypeError, ValueError):
+            timeout = 210
+    try:
+        await asyncio.wait_for(
+            _handle_chat_inner(bot, event, state),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        logger.error(f"[miku_ai] 消息{event.message_id}处理超时({timeout}s)")
+        try:
+            await _chat_matcher.send("Miku思考太久了，脑子过热啦...等一下再试试吧～")
         except Exception:
             pass
-        await _chat_matcher.finish()
-        return
-
-    session_lock = await _get_session_lock(session_id)
-    if session_lock.locked():
-        logger.info(f"[miku_ai] 会话{session_id}有正在处理的消息，排队等待")
-
-    try:
-        async with session_lock:
-            # 超时保护：单条消息处理最多120秒，防止API卡死导致会话永久阻塞
-            try:
-                await asyncio.wait_for(
-                    _handle_chat_inner(bot, event, state),
-                    timeout=120,
-                )
-            except asyncio.TimeoutError:
-                logger.error(f"[miku_ai] 会话{session_id}处理超时(120s)，强制释放")
-                try:
-                    await _chat_matcher.send("Miku思考太久了，脑子过热啦...等一下再试试吧～")
-                except Exception:
-                    pass
-    finally:
-        await _dequeue(session_id)
 
 
 async def _handle_chat_inner(bot: Bot, event: MessageEvent, state: T_State):
@@ -380,6 +377,36 @@ async def _handle_chat_inner(bot: Bot, event: MessageEvent, state: T_State):
             text_body = "\n".join(text_parts_new).strip()
             text = (prefix + "\n" + text_body).strip() if prefix else text_body
         
+        # ── AI 插件调度：先判断这句话是不是要调用某个插件动作（点歌/天气/签到…） ──
+        tool_context = ""
+        if bool(get_config("plugin_router_enabled", True)) and text:
+            route = None
+            try:
+                route = await plugin_router.route_message(
+                    bot, event, text, user_id, group_id,
+                    isinstance(event, GroupMessageEvent),
+                )
+            except Exception as e:
+                logger.warning(f"[miku_ai] 插件路由异常，退回普通聊天: {type(e).__name__}: {e}")
+            if route is not None:
+                if route.kind == "ask" and route.text:
+                    await _chat_matcher.finish(route.text)
+                    return
+                if route.kind == "done":
+                    # 动作已执行：补一条历史，避免下一轮上下文断裂
+                    try:
+                        hm = get_history_manager()
+                        hm.append_message(
+                            hm.get_session_id(user_id, group_id), "assistant",
+                            f"[已执行动作 {route.action}]", is_group=bool(group_id),
+                        )
+                    except Exception:
+                        pass
+                    await _chat_matcher.finish()
+                    return
+                if route.kind == "tool":
+                    tool_context = route.text
+
         # 群聊仅在 @Bot 时触发回复
         try:
             reply, extra = await process_chat(
@@ -390,6 +417,8 @@ async def _handle_chat_inner(bot: Bot, event: MessageEvent, state: T_State):
                 group_id=group_id,
                 image_files=image_files,
                 message_id=str(event.message_id),
+                message_ts=int(getattr(event, "time", 0) or 0),
+                tool_context=tool_context,
             )
         except Exception as e:
             import traceback

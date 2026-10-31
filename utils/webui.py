@@ -7,6 +7,9 @@ MikuBot Web 管理后台 —— 挂载到 NoneBot 的 FastAPI 服务器
 
 import os
 import json
+import socket
+import sys
+import threading
 import time
 import yaml
 import shutil
@@ -52,6 +55,7 @@ from utils.ai_model_config import (
     default_ai_model_config_text,
     get_ai_model_config,
     migrate_legacy_ai_config,
+    migrate_local_model_to_platforms,
     parse_ai_model_config,
     save_ai_model_config,
 )
@@ -73,6 +77,14 @@ BLACKLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 # 启动时间（uptime 计算用）
 _START_TIME = time.time()
+_LISTENER_CHECK_INTERVAL = 30
+_LISTENER_CHECK_TIMEOUT = 5
+_LISTENER_FAILURE_ALERT_EVERY = 5
+_LISTENER_FAILURE_RESTART_AFTER = 3
+_LISTENER_RESTART_COOLDOWN_SECONDS = 600
+_LISTENER_RESTART_ENV = "MIKU_WEBUI_WATCHDOG_RESTART_AT"
+_listener_check_stop = threading.Event()
+_listener_check_thread: Optional[threading.Thread] = None
 
 
 # ===================== 读取密码 =====================
@@ -339,6 +351,10 @@ _CONFIG_LABELS: Dict[str, Dict[str, Dict[str, str]]] = {
         "favor_decrease_max": {"label": "好感减少最大值", "hint": "好感度减少范围最大值"},
         "personality_file": {"label": "人格文件", "hint": "AI人格提示词文件路径，相对项目根"},
         "personality_reload": {"label": "人格热更新", "hint": "true=每次回复重新读取人格文件，方便调试；false=只加载一次"},
+        "web_search_enabled": {"label": "联网搜索", "hint": "联网搜索总开关：true=允许联网搜索并注入结果；false=完全关闭联网搜索"},
+        "web_search_keyword_only": {"label": "命中关键字", "hint": "true=只有命中关键词（天气/新闻/最新/搜一下等）才搜索；false=由AI结合上下文自主判断是否需要联网搜索"},
+        "web_search_max_results": {"label": "搜索结果条数", "hint": "每次联网搜索最多注入的结果条数"},
+        "web_search_timeout": {"label": "搜索超时", "hint": "单个搜索引擎的超时时间（秒），超时后自动切换下一个引擎"},
         "temperature": {"label": "采样温度", "hint": "AI回答的创造性，值越高回答越随机(0-2)"},
         "max_tokens": {"label": "最大Token数", "hint": "单次回复最大token数，留空不限"},
         "request_timeout": {"label": "请求超时", "hint": "API请求超时秒数，超过则报错"},
@@ -1154,7 +1170,10 @@ def _mount_admin():
     @api_router_v1.post("/system/restart")
     async def api_v1_system_restart():
         """重启 Bot"""
-        logger.warning("[WebUI] 收到重启指令，正在重启 Bot...")
+        logger.warning(
+            "[WebUI] 收到重启指令，"
+            "原因=WebUI POST /zhenxun/api/v1/system/restart，正在重启 Bot..."
+        )
         import asyncio
         loop = asyncio.get_event_loop()
         loop.call_later(1, lambda: os.execv(sys.executable, [sys.executable, str(BASE_DIR / "bot.py")]))
@@ -2629,7 +2648,9 @@ def _mount_admin():
     async def api_restart(req: Request):
         """重启 Bot 服务"""
         _require_auth(req)
-        logger.warning("[WebUI] 收到重启指令，正在重启 Bot...")
+        logger.warning(
+            "[WebUI] 收到重启指令，原因=WebUI POST /api/restart，正在重启 Bot..."
+        )
         import sys, os
         # 使用 sys.executable 确保使用正确的 Python 解释器
         python = sys.executable
@@ -2777,7 +2798,7 @@ def _mount_admin():
                     save_ai_model_config(current_model_config)
                 except (OSError, ValueError, yaml.YAMLError) as e:
                     raise HTTPException(status_code=400, detail=f"AI平台配置保存失败: {e}") from e
-                if not any(key in body for key in ("enabled", "config", "items")):
+                if not any(key in body for key in ("enabled", "config", "items", "special_users")):
                     logger.success("[WebUI] 全局 AI 平台列表已热更新")
                     return {"success": True}
 
@@ -2792,11 +2813,18 @@ def _mount_admin():
             data[name]["enabled"] = bool(body["enabled"])
         if "config" in body and isinstance(body["config"], dict):
             data[name].update(body["config"])
+        if "special_users" in body:
+            su = body["special_users"]
+            if not isinstance(su, list) or any(not isinstance(u, dict) for u in su):
+                raise HTTPException(status_code=400, detail="特殊人物列表必须是对象数组")
+            data[name]["special_users"] = su
         if "items" in body and isinstance(body["items"], list):
             for item in body["items"]:
                 if not isinstance(item, dict) or "key" not in item:
                     continue
                 k = item["key"]
+                if k == "special_users":
+                    continue
                 v = item.get("value", "")
                 if str(v).strip() == "" and k != "enabled":
                     # 空值保持原配置，不删除
@@ -2876,6 +2904,10 @@ def _mount_admin():
             except Exception as e:
                 logger.warning(f"[WebUI] 热更新 config_manager 失败: {e}")
         elif target == "ai-models":
+            try:
+                migrate_local_model_to_platforms()
+            except Exception as e:
+                logger.warning(f"[WebUI] 本地模型迁移失败: {e}")
             logger.success("[WebUI] 全局 AI 模型配置已热更新")
 
         return {"success": True}
@@ -2909,6 +2941,10 @@ def _mount_admin():
             except Exception as e:
                 logger.warning(f"[WebUI] 热更新 config_manager 失败: {e}")
         elif target == "ai-models":
+            try:
+                migrate_local_model_to_platforms()
+            except Exception as e:
+                logger.warning(f"[WebUI] 恢复备份后本地模型迁移失败: {e}")
             logger.success(f"[WebUI] 已恢复全局 AI 模型配置（{timestamp}）")
 
         return {"success": True}
@@ -3106,7 +3142,7 @@ def _mount_admin():
                 expire_hours = 48
 
             now = datetime.now()
-            changed = False
+            active_requests = []
             for req_item in requests:
                 if req_item.get("handled"):
                     continue
@@ -3116,24 +3152,25 @@ def _mount_admin():
                             req_item.get("time", ""), "%Y-%m-%d %H:%M:%S"
                         )
                         if (now - req_time).total_seconds() > expire_hours * 3600:
-                            req_item["handled"] = True
-                            req_item["action"] = "expired"
-                            changed = True
-                    except Exception:
+                            continue
+                    except (TypeError, ValueError):
                         pass
+                active_requests.append(req_item)
 
+            changed = len(active_requests) != len(requests)
+            data["requests"] = active_requests
+            if not active_requests and data.get("counter", 0) != 0:
+                data["counter"] = 0
+                changed = True
             if changed:
                 request_file.write_text(
                     json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
 
-            pending_count = sum(
-                1 for r in requests
-                if not r.get("handled")
-            )
+            pending_count = len(active_requests)
 
             from utils.avatar_cache import get_avatar_data_uri
-            for item in requests:
+            for item in active_requests:
                 uid = str(item.get("user_id", ""))
                 if uid and not item.get("avatar"):
                     try:
@@ -3145,7 +3182,7 @@ def _mount_admin():
                     if gid:
                         item["group_avatar"] = f"https://p.qlogo.cn/gh/{gid}/{gid}/100"
 
-            return {"requests": list(reversed(requests)), "pending_count": pending_count}
+            return {"requests": list(reversed(active_requests)), "pending_count": pending_count}
         except Exception as e:
             logger.warning(f"[WebUI] 获取申请列表失败: {e}")
             return {"requests": [], "pending_count": 0, "error": str(e)}
@@ -3196,13 +3233,15 @@ def _mount_admin():
                         sub_type=target_req.get("sub_type", "add"),
                         approve=True,
                     )
-                target_req["handled"] = True
-                target_req["action"] = "approve"
-                target_req["handle_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                data["requests"] = [r for r in requests if r.get("id") != req_id]
                 request_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
                 return {"success": True, "message": "已同意"}
             except Exception as e:
                 err_msg = str(e)
+                if "already agree msg by self" in err_msg.casefold():
+                    data["requests"] = [r for r in requests if r.get("id") != req_id]
+                    request_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+                    return {"success": True, "message": "申请此前已同意，已同步本地状态"}
                 if "No such request" in err_msg or "no such request" in err_msg or "1200" in err_msg:
                     target_req["handled"] = True
                     target_req["action"] = "expired"
@@ -3266,10 +3305,7 @@ def _mount_admin():
                         approve=False,
                         reason=reason,
                     )
-                target_req["handled"] = True
-                target_req["action"] = "reject"
-                target_req["reason"] = reason
-                target_req["handle_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                data["requests"] = [r for r in requests if r.get("id") != req_id]
                 request_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
                 return {"success": True, "message": "已拒绝"}
             except Exception as e:
@@ -3492,15 +3528,16 @@ def _mount_admin():
             raise HTTPException(status_code=404, detail="Not Found")
 
         html_pages = ["login", "dashboard", "plugins", "plugin", "blacklist", "config", "logs", "devices", "groups", "users", "chat", "requests"]
+        no_cache_headers = {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"}
         if full_path in html_pages:
             html_file = ADMIN_DIR / f"{full_path}.html"
             if html_file.exists():
-                return HTMLResponse(html_file.read_text(encoding="utf-8"))
+                return HTMLResponse(html_file.read_text(encoding="utf-8"), headers=no_cache_headers)
 
         if full_path.endswith(".html"):
             html_file = ADMIN_DIR / full_path
             if html_file.exists():
-                return HTMLResponse(html_file.read_text(encoding="utf-8"))
+                return HTMLResponse(html_file.read_text(encoding="utf-8"), headers=no_cache_headers)
 
         if full_path == "favicon.ico":
             favicon = ADMIN_DIR / "favicon.ico"
@@ -3573,12 +3610,146 @@ def _format_size(size: int) -> str:
         return f"{size / 1024 / 1024:.1f}MB"
 
 
+def _check_listener(host: str, port: int) -> None:
+    with socket.create_connection(
+        (host, port), timeout=_LISTENER_CHECK_TIMEOUT
+    ):
+        pass
+
+
+def _restart_bot_for_listener_failure(
+    host: str,
+    port: int,
+    failures: int,
+    outage_seconds: int,
+    error: OSError,
+) -> None:
+    now = int(time.time())
+    previous_restart = os.environ.get(_LISTENER_RESTART_ENV)
+    if previous_restart:
+        try:
+            restart_age = now - int(previous_restart)
+        except ValueError:
+            logger.warning(
+                f"[WebUI] 忽略无效的自动恢复冷却标记: {previous_restart!r}"
+            )
+        else:
+            if 0 <= restart_age < _LISTENER_RESTART_COOLDOWN_SECONDS:
+                logger.critical(
+                    f"[WebUI] 监听仍不可用 ({host}:{port})，且 Bot 在 "
+                    f"{restart_age} 秒前已尝试自动恢复；为避免重启循环，"
+                    "本次不再自动重启。请检查端口占用和启动日志。"
+                )
+                return
+
+    logger.critical(
+        f"[WebUI] TCP 监听连续失败 {failures} 次、持续 {outage_seconds} 秒，"
+        f"将自动重启 Bot 恢复 WebUI；目标={host}:{port}，"
+        f"错误={type(error).__name__}: {error}，PID={os.getpid()}"
+    )
+    os.environ[_LISTENER_RESTART_ENV] = str(now)
+    python = sys.executable
+    os.execv(python, [python, str(BASE_DIR / "bot.py")])
+
+
+def _start_listener_healthcheck() -> None:
+    global _listener_check_thread
+
+    if _listener_check_thread and _listener_check_thread.is_alive():
+        return
+
+    driver = get_driver()
+    host = str(getattr(driver.config, "host", "127.0.0.1"))
+    port = int(getattr(driver.config, "port", 3108))
+    if host == "0.0.0.0":
+        check_host = "127.0.0.1"
+    elif host == "::":
+        check_host = "::1"
+    else:
+        check_host = host
+    _listener_check_stop.clear()
+
+    def _monitor():
+        failures = 0
+        outage_started = None
+        recovery_decided = False
+        while not _listener_check_stop.wait(_LISTENER_CHECK_INTERVAL):
+            try:
+                _check_listener(check_host, port)
+            except OSError as e:
+                failures += 1
+                if outage_started is None:
+                    outage_started = time.monotonic()
+                    logger.warning(
+                        f"[WebUI] TCP 监听健康检查失败 "
+                        f"({check_host}:{port}): {type(e).__name__}: {e}"
+                    )
+                elif failures == 3 or failures % _LISTENER_FAILURE_ALERT_EVERY == 0:
+                    elapsed = int(time.monotonic() - outage_started)
+                    logger.error(
+                        f"[WebUI] TCP 监听连续失败 {failures} 次，"
+                        f"已持续 {elapsed} 秒；Bot PID={os.getpid()}，"
+                        f"目标={check_host}:{port}，最近错误={type(e).__name__}: {e}"
+                    )
+                if (
+                    not recovery_decided
+                    and failures >= _LISTENER_FAILURE_RESTART_AFTER
+                ):
+                    recovery_decided = True
+                    try:
+                        _restart_bot_for_listener_failure(
+                            check_host, port, failures, elapsed, e
+                        )
+                    except OSError:
+                        logger.exception(
+                            "[WebUI] 自动重启 Bot 失败；监听仍不可用，"
+                            "请人工检查进程和端口状态"
+                        )
+            else:
+                if failures:
+                    elapsed = int(time.monotonic() - outage_started)
+                    logger.success(
+                        f"[WebUI] TCP 监听已恢复 "
+                        f"({check_host}:{port})，中断约 {elapsed} 秒，"
+                        f"连续失败 {failures} 次"
+                    )
+                    failures = 0
+                    outage_started = None
+                    recovery_decided = False
+                if os.environ.pop(_LISTENER_RESTART_ENV, None) is not None:
+                    logger.info(
+                        "[WebUI] 自动恢复后的监听探测成功，已清除重启冷却标记"
+                    )
+
+    _listener_check_thread = threading.Thread(
+        target=_monitor,
+        name="webui-listener-healthcheck",
+        daemon=True,
+    )
+    _listener_check_thread.start()
+    logger.info(
+        f"[WebUI] TCP 监听健康检查已启动：{check_host}:{port}，"
+        f"间隔 {_LISTENER_CHECK_INTERVAL} 秒"
+    )
+
+
+def _stop_listener_healthcheck() -> None:
+    _listener_check_stop.set()
+    logger.warning(
+        "[WebUI] 收到 FastAPI/NoneBot ASGI 关闭生命周期回调；"
+        "关闭发起方未通过该回调提供，需结合此前的重启请求日志及 Uvicorn 关闭日志判断"
+    )
+
+
 # ========= 启动时挂载 =========
 def _register_hook():
     try:
         driver = get_driver()
         if hasattr(driver, "on_startup") and callable(driver.on_startup):
             driver.on_startup(_mount_admin)
+            driver.on_startup(_start_listener_healthcheck)
+            if hasattr(driver, "on_shutdown") and callable(driver.on_shutdown):
+                driver.on_shutdown(_stop_listener_healthcheck)
         else:
             _mount_admin()
     except Exception as e:

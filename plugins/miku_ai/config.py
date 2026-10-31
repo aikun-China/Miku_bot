@@ -58,15 +58,11 @@ _AI_TEMPLATE = (
     "  max_user_msg_chars: 1000\n"
     "  # 引用消息最大字符数（单独限制，防止引用长文炸token）\n"
     "  max_quoted_chars: 300\n"
-    "  # 群聊消息处理队列深度上限（同会话最多排队条数）\n"
-    "  group_max_queue: 3\n"
-    "  # 私聊消息处理队列深度上限\n"
-    "  private_max_queue: 5\n"
     "  # 聊天记录数据库路径（SQLite，相对项目根目录）\n"
     "  history_db_path: data/ai_chat_history.db\n"
     "  # 上下文时间窗口（分钟，0=禁用）：只把最近N分钟内的历史消息发给AI，省token且不接隔夜旧话题\n"
     "  context_time_window_minutes: 0\n"
-    "  # AI API 最大并发数（多群同时触发时限流排队，防低配机过载与API限流）\n"
+    "  # 每个配置平台/模型组合的最大并发数；满载时分配到后续可用模型，全部满载时等待空位\n"
     "  api_max_concurrency: 2\n"
     "\n"
     "  # ── 好感度系统 ──\n"
@@ -91,14 +87,37 @@ _AI_TEMPLATE = (
     "  personality_reload: false\n"
     "\n"
     "  # ── 联网搜索 ──\n"
-    "  # 是否启用：命中关键词（天气/新闻/最新/搜一下等）时自动搜索并注入结果\n"
+    "  # 联网搜索开关：true=允许联网搜索并把结果注入回复；false=完全关闭联网搜索\n"
     "  web_search_enabled: true\n"
-    "  # AI自主判断是否需要搜索（true=带上下文智能判断，能理解指代；false=仅关键词触发）\n"
-    "  web_search_ai_judge: true\n"
+    "  # 命中关键字开关：true=只有命中关键词（天气/新闻/最新/搜一下等）的消息才自动搜索；\n"
+    "  # false=不设关键词门槛，由 AI 结合上下文自行判断是否需要联网搜索（每条消息多一次判断调用，回复稍慢）\n"
+    "  web_search_keyword_only: true\n"
     "  # 搜索结果条数上限\n"
     "  web_search_max_results: 5\n"
     "  # 单个搜索引擎超时（秒）\n"
     "  web_search_timeout: 8\n"
+    "\n"
+    "  # ── AI 插件调度（让 AI 自主判断该调用哪个插件） ──\n"
+    "  # 总开关：true=允许 AI 把消息路由给已注册的插件动作（点歌/天气/签到等）\n"
+    "  plugin_router_enabled: true\n"
+    "  # 预筛开关：true=只对命中动作关键词/正则的消息才让 AI 判断（更快更省）；\n"
+    "  # false=不设门槛，每条消息都让 AI 判断（更聪明但每条多一次小模型调用）\n"
+    "  plugin_router_keyword_only: true\n"
+    "  # AI 判定置信度阈值（0-1），低于此值当作普通聊天\n"
+    "  plugin_router_confidence: 0.75\n"
+    "  # AI 判定超时（秒），超时直接退回普通聊天\n"
+    "  plugin_router_timeout: 10\n"
+    "  # 动作白名单：留空=允许全部已注册动作；填写后只允许列表内的动作\n"
+    "  # 可选值见启动日志 [router] 动作注册情况，例如 music.play / weather.query\n"
+    "  plugin_router_actions: []\n"
+    "  # 群聊里不 @Bot 时是否也判断动作（默认关，避免群友互相聊天被误触发）\n"
+    "  plugin_router_group_ambient: false\n"
+    "  # 命中动作后是否先回一句「好呀～」（动作自身会发提示时可关掉）\n"
+    "  plugin_router_ack: false\n"
+    "  # 缺参数追问的有效期（秒），用户在有效期内补充即可继续执行\n"
+    "  plugin_router_followup_seconds: 60\n"
+    "  # 动作执行超时（秒），点歌下载等耗时动作需要放宽\n"
+    "  plugin_router_action_timeout: 180\n"
     "\n"
     "  # ── 特殊人物识别 ──\n"
     "  # 通过 QQ 号和昵称识别特定的人，给 AI 加上身份设定\n"
@@ -248,8 +267,6 @@ _cfg = config_manager.register_plugin(
         "max_context_chars": 8000,
         "max_user_msg_chars": 1000,
         "max_quoted_chars": 300,
-        "group_max_queue": 3,
-        "private_max_queue": 5,
         "history_db_path": "data/ai_chat_history.db",
         "context_time_window_minutes": 0,
         "api_max_concurrency": 2,
@@ -263,8 +280,19 @@ _cfg = config_manager.register_plugin(
         "personality_file": "plugins/miku_ai/personality.txt",
         "personality_reload": False,
         "web_search_enabled": True,
+        "web_search_keyword_only": True,
         "web_search_max_results": 5,
         "web_search_timeout": 8,
+        # AI 插件调度
+        "plugin_router_enabled": True,
+        "plugin_router_keyword_only": True,
+        "plugin_router_confidence": 0.75,
+        "plugin_router_timeout": 10,
+        "plugin_router_actions": [],
+        "plugin_router_group_ambient": False,
+        "plugin_router_ack": False,
+        "plugin_router_followup_seconds": 60,
+        "plugin_router_action_timeout": 180,
         "special_users": [
             {
                 "qq": ["761695424"],
@@ -385,7 +413,8 @@ _AUTH_KEYWORDS = (
 
 def get_ai_platforms() -> List[Dict[str, str]]:
     """读取 AI 平台列表（多平台故障转移用）。
-    优先使用 ai_platforms 列表配置；未配置时使用本地 AI 配置作为兜底。
+    优先使用 ai_platforms 列表配置；本地模型已迁移为普通平台，与云端平台一起按顺序故障转移。
+    仅在 ai_platforms 为空且仍保留旧版 local_* 配置时，用本地配置兜底（兼容未完成迁移的配置）。
     返回前按冷却状态排序：可用平台在前（保持配置顺序），冷却中的垫底；
     全部处于冷却时仍全部返回（兜底总得试试）。"""
     model_config = get_ai_model_config()

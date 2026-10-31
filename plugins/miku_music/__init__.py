@@ -2064,16 +2064,34 @@ music_cmd = on_command(
 )
 
 
-@music_cmd.handle()
-async def handle_music(bot: Bot, event: MessageEvent, args: Message = CommandArg()):
+def _normalize_quality_arg(quality) -> Optional[str]:
+    """把 AI 动作参数里的音质（中文标签/别名）转成内部音质代号，无法识别返回 None。"""
+    if not quality:
+        return None
+    text = str(quality).strip()
+    return QUALITY_ALIASES.get(text) or QUALITY_ALIASES.get(text.lower()) or None
+
+
+async def play_by_query(bot: Bot, event: MessageEvent, query: str,
+                        quality: Optional[str] = None, emit=None) -> Dict:
+    """点歌核心：本地音乐库 → 网易云 → QQ音乐，并把结果以语音消息发出去。
+
+    - query：用户输入的原始歌名（可带音质词，如「春日影 无损」）
+    - quality：显式音质（标准/高清/极高/无损/母带，或内部代号），优先于 query 里的音质词
+    - emit：发消息函数；命令路径传 music_cmd.send，AI 动作传 ctx.emit
+
+    返回：{"status": "ok"}（消息已通过 emit 发完）/ {"status": "skip"}（插件未启用）
+    """
+    if emit is None:
+        emit = music_cmd.send
     try:
         if not _is_enabled():
-            return
+            return {"status": "skip"}
 
-        raw_query = args.extract_plain_text().strip()
+        raw_query = str(query or "").strip()
         if not raw_query:
-            await music_cmd.finish("❓ 点什么歌？用法：点歌 <歌名> [音质]\n音质选项：标准/高清/极高/无损/母带")
-            return
+            await emit("❓ 点什么歌？用法：点歌 <歌名> [音质]\n音质选项：标准/高清/极高/无损/母带")
+            return {"status": "ok"}
 
         # 不做任何字符翻译，保留用户输入原样（日文/个性字体均不转换）
         # raw_query = _normalize_text(raw_query)
@@ -2083,11 +2101,13 @@ async def handle_music(bot: Bot, event: MessageEvent, args: Message = CommandArg
         _SEARCH_PUNCT_RE = re.compile(r'[\s!?！？~～…・·]+$|^[\s!?！？~～…・·]+')
         search_query = _SEARCH_PUNCT_RE.sub('', raw_query).strip()
 
-        # 解析用户输入中的音质选项
-        query, user_quality = _parse_quality_from_query(raw_query)
+        # 解析用户输入中的音质选项（与原命令路径完全一致）；
+        # AI 动作把音质作为单独参数传来时，显式参数优先
+        query, parsed_quality = _parse_quality_from_query(raw_query)
         if not query:
-            await music_cmd.finish("❓ 请输入歌曲名！用法：点歌 <歌名> [音质]")
-            return
+            await emit("❓ 请输入歌曲名！用法：点歌 <歌名> [音质]")
+            return {"status": "ok"}
+        user_quality = _normalize_quality_arg(quality) or parsed_quality
 
         threshold = int(_conf("similarity_threshold", 50) or 50)
         max_results = int(_conf("max_results", 5) or 5)
@@ -2168,7 +2188,7 @@ async def handle_music(bot: Bot, event: MessageEvent, args: Message = CommandArg
                     need_upgrade = True
                     stored_q_label = QUALITY_LABELS.get(local_quality, "标准") if local_quality else "未知"
                     try:
-                        await music_cmd.send(
+                        await emit(
                             f"🔀 本地无「{quality_label}」音质，"
                             f"正在下载（现有「{stored_q_label}」将保留）..."
                         )
@@ -2225,15 +2245,14 @@ async def handle_music(bot: Bot, event: MessageEvent, args: Message = CommandArg
                     if need_upgrade and not redownloaded:
                         info_line += f"（下载失败，使用本地旧音质）"
                     # 文字先发送
-                    await music_cmd.send(info_line)
+                    await emit(info_line)
 
                 # 大文件或 FLAC 需转码为语音适用的 MP3
                 voice_path = await _prepare_voice_audio(file_path)
                 file_uri = voice_path.as_uri()
                 # 语音单独发送（用 send 而非 finish，因为后面还要发提示）
-                await music_cmd.send(MessageSegment.record(file_uri))
-                await music_cmd.finish()
-                return
+                await emit(MessageSegment.record(file_uri))
+                return {"status": "ok"}
 
         # ====== 第二步：本地没有，从网易云搜索下载（失败时回退QQ音乐） ======
         enable_ncm = str(_conf("enable_ncm", True)).strip().lower() not in ("false", "0", "no", "")
@@ -2247,19 +2266,19 @@ async def handle_music(bot: Bot, event: MessageEvent, args: Message = CommandArg
                 if isinstance(ns, list) and ns:
                     all_names.append(str(ns[0]))
             hint = f"💡 试试这些：{'、'.join(all_names)}" if all_names else ""
-            await music_cmd.finish(f"❌ 没找到「{query}」相关的歌曲\n{hint}")
-            return
+            await emit(f"❌ 没找到「{query}」相关的歌曲\n{hint}")
+            return {"status": "ok"}
 
         result = None
         if enable_ncm:
             if not PYNCM_AVAILABLE:
                 if not enable_qqmusic:
-                    await music_cmd.finish(
+                    await emit(
                         f"❌ 本地未找到「{query}」\n"
                         f"⚠️ 网易云搜索功能未启用（pyncm 未安装）\n"
                         f"请运行：pip install pyncm"
                     )
-                    return
+                    return {"status": "ok"}
                 logger.warning("[点歌] pyncm 未安装，跳过网易云，直接尝试QQ音乐")
             else:
                 # 告知用户正在搜索
@@ -2267,7 +2286,7 @@ async def handle_music(bot: Bot, event: MessageEvent, args: Message = CommandArg
                 if user_quality:
                     search_msg += f"\n🎧 请求音质：{quality_label}"
                 try:
-                    await music_cmd.send(search_msg)
+                    await emit(search_msg)
                 except Exception:
                     pass
 
@@ -2276,7 +2295,7 @@ async def handle_music(bot: Bot, event: MessageEvent, args: Message = CommandArg
         # ====== 第三步：QQ音乐回退（网易云没找到或下载失败时） ======
         if enable_qqmusic and (not result or result.get("_download_failed")):
             try:
-                await music_cmd.send(f"🔁 网易云未能提供「{query}」，尝试QQ音乐...")
+                await emit(f"🔁 网易云未能提供「{query}」，尝试QQ音乐...")
             except Exception:
                 pass
             qq_result = await _search_and_download_qq(query)
@@ -2295,8 +2314,8 @@ async def handle_music(bot: Bot, event: MessageEvent, args: Message = CommandArg
                 fail_msg += "\n高品质音乐无法下载，请更新Cookie"
                 fail_msg += "\n获取方式：浏览器登录 music.163.com → F12 → Application → Cookies → 复制 MUSIC_U"
                 asyncio.create_task(_notify_cookie_expired(bot, event))
-            await music_cmd.finish(fail_msg)
-            return
+            await emit(fail_msg)
+            return {"status": "ok"}
 
         if result.get("_download_failed"):
             # 找到但下载失败（版权限制等）
@@ -2312,8 +2331,8 @@ async def handle_music(bot: Bot, event: MessageEvent, args: Message = CommandArg
                 else:
                     fail_msg += "\n但QQ音乐匿名取链被风控拦截（机房IP无登录态一律拒绝）"
                     fail_msg += "\n💡 在 bot.yaml 的 miku_music.qqmusic_cookie 填入 y.qq.com 整串Cookie后可下载"
-                await music_cmd.finish(fail_msg)
-                return
+                await emit(fail_msg)
+                return {"status": "ok"}
             fail_msg += "\n但网易云因版权限制无法下载"
             # 区分 Cookie 是否为真实 SVIP：
             #   - vipType in (10,11) → 服务器认了SVIP，歌曲才是版权锁死（Cookie真没问题）
@@ -2348,8 +2367,8 @@ async def handle_music(bot: Bot, event: MessageEvent, args: Message = CommandArg
                 fail_msg += "\n高品质音乐无法下载，请更新Cookie"
                 fail_msg += "\n获取方式：浏览器登录 music.163.com → F12 → Application → Cookies → 复制 MUSIC_U"
                 asyncio.create_task(_notify_cookie_expired(bot, event))
-            await music_cmd.finish(fail_msg)
-            return
+            await emit(fail_msg)
+            return {"status": "ok"}
 
         # 正常下载结果
         song = result["song"]
@@ -2362,8 +2381,8 @@ async def handle_music(bot: Bot, event: MessageEvent, args: Message = CommandArg
 
         is_valid, error_msg = _is_valid_audio_file(file_path)
         if not is_valid:
-            await music_cmd.finish(f"❌ 下载失败：{error_msg}")
-            return
+            await emit(f"❌ 下载失败：{error_msg}")
+            return {"status": "ok"}
 
         # 发送音乐
         # 提前计算 display_quality（下载提示要用，即使 send_info=False）
@@ -2390,25 +2409,92 @@ async def handle_music(bot: Bot, event: MessageEvent, args: Message = CommandArg
             if is_new:
                 info_line += "\n✅ 已自动缓存到本地，下次点歌更快"
             # 文字先发送
-            await music_cmd.send(info_line)
+            await emit(info_line)
 
         # 大文件或 FLAC 需转码为语音适用的 MP3
         voice_path = await _prepare_voice_audio(file_path)
         file_uri = voice_path.as_uri()
         # 语音单独发送（用 send 而非 finish，因为后面还要发提示）
-        await music_cmd.send(MessageSegment.record(file_uri))
-        await music_cmd.finish()
+        await emit(MessageSegment.record(file_uri))
+        return {"status": "ok"}
 
-    except FinishedException:
-        raise
     except Exception as e:
         logger.error(f"[点歌] 处理失败: {e}")
         import traceback
         logger.error(traceback.format_exc())
         try:
-            await music_cmd.finish(f"❌ 点歌出错了：{e}")
-        except FinishedException:
+            await emit(f"❌ 点歌出错了：{e}")
+        except Exception:
             pass
+        return {"status": "ok"}
+
+
+@music_cmd.handle()
+async def handle_music(bot: Bot, event: MessageEvent, args: Message = CommandArg()):
+    """命令入口：解析参数后交给 play_by_query，行为与重构前完全一致。"""
+    raw_query = args.extract_plain_text().strip()
+    await play_by_query(bot, event, raw_query, quality=None, emit=music_cmd.send)
+
+
+# ============================================================
+# AI 动作注册：music.play
+# ============================================================
+try:
+    from utils.ai_actions import ActionContext, register_ai_action
+
+    async def _ai_play(ctx: ActionContext) -> Dict:
+        """AI 动作 music.play：按歌名点歌（本地 → 网易云 → QQ音乐）。"""
+        song = ctx.arg_str("song")
+        if not song:
+            return {"status": "skip"}
+        result = await play_by_query(
+            ctx.bot,
+            ctx.event,
+            song,
+            quality=ctx.arg_str("quality") or None,
+            emit=ctx.emit,
+        )
+        if str((result or {}).get("status", "ok")) == "skip":
+            return {"status": "skip"}
+        return {"status": "ok"}
+
+    register_ai_action(
+        "music.play",
+        plugin="miku_music",
+        plugin_display="点歌",
+        description="按歌名播放歌曲：优先本地音乐库，没有就从网易云/QQ音乐搜索下载，并以语音消息发送",
+        handler=_ai_play,
+        params={
+            "song": {
+                "type": "string",
+                "required": True,
+                "desc": "歌名",
+                "ask": "想听什么歌呀？告诉我歌名～",
+                "max_len": 60,
+            },
+            "quality": {
+                "type": "string",
+                "required": False,
+                "desc": "音质",
+                "enum": ["标准", "高清", "极高", "无损", "母带"],
+            },
+        },
+        examples=["唱一首春日影", "给我放首周杰伦", "来一首夜に駆ける", "唱个歌"],
+        patterns=[
+            # 带量词（首歌/首/曲/歌）：唱一首X / 来首X / 给我放首X；歌名可为空 → 缺参追问
+            r"^(?:能不能|可不可以|可以|帮我|给我|麻烦|请|求求)?\s*(?:你)?\s*(?:播放|唱|来|放|点|整|播)\s*(?:一|两|几|个)?\s*(?:首歌|首|曲|歌)\s*(?P<song>.*)$",
+            # 有请求前缀、无量词：给我放周杰伦 / 帮我唱春日影
+            r"^(?:能不能|可不可以|可以|帮我|给我|麻烦|请|求求)\s*(?:你)?\s*(?:播放|唱|来|放|点|整|播)\s*(?:一|两|几|个)?\s*(?P<song>(?![什么啥]|建议|意见|外卖|个?赞|关注|名|一下|了|首歌?).{2,})$",
+            # 裸动词 + 个：唱个春日影
+            r"^(?:播放|唱|来|放|整)\s*个\s*(?P<song>(?![什么啥]|建议|意见|外卖|个?赞|关注|名|一下|了|歌$).{1,})$",
+            # 播放X / 播放一下X
+            r"^(?:播放)\s*(?:一下|下)?\s*(?P<song>(?![什么啥]|建议|意见|外卖|个?赞|关注|名|一下|了|首歌?).{2,})$",
+        ],
+        keywords=["唱", "来首", "放首", "想听"],
+        order=10,
+    )
+except ImportError:
+    pass
 
 
 # ============================================================
@@ -2691,6 +2777,7 @@ register_plugin_info(
     description="本地+网易云点歌，自动下载缓存，可同步到文件分享站",
     commands=["点歌", "歌单", "刷新歌单", "网易云登录", "网易云登录状态"],
     usage=f"""点歌 <歌名> [音质]
+也可以直接说：唱一首 <歌名> / 给我放首 <歌名> / 来一首 <歌名>
 支持音质：标准/高清/极高/无损/母带
 默认标准音质，可指定高品质
 本地没有则从网易云搜索下载

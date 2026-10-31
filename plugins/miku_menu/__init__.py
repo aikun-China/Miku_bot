@@ -11,6 +11,13 @@ from utils.bg_helper import find_and_load_bg, find_bg_image, get_image_size
 from pathlib import Path
 import re
 
+from nonebot.log import logger
+
+try:
+    from utils.ai_actions import register_ai_action, ActionContext
+except ImportError:
+    register_ai_action = None
+
 
 def _is_tome_or_private(bot: Bot, event: MessageEvent) -> bool:
     """只有@Bot或私聊时才触发菜单命令，避免其他Bot消息误触发"""
@@ -95,26 +102,29 @@ def _html_escape(s: str) -> str:
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
-@menu_cmd.handle()
-async def _handle_menu():
-    """处理菜单指令"""
-    if not _is_enabled():
-        return
-
+def _build_menu_text(with_example: bool = True) -> str:
+    """菜单纯文本（文本模式与图片降级共用，尾部提示略有不同）。"""
     plugins = get_all_plugins()
+    lines = ["🎵 MikuBot 功能菜单"]
+    lines.append("─" * 30)
+    for p in plugins:
+        lines.append(f"[{p['index']}] {p['icon']} {p['name']}")
+    lines.append("─" * 30)
+    tail = "💡 发送「详细帮助+插件名/编号」获取详情"
+    if with_example:
+        tail += "，例如：详细帮助 天气 / 详细帮助 1"
+    lines.append(tail)
+    return "\n".join(lines)
 
+
+async def _build_menu_reply():
+    """构建菜单消息：文本模式返回字符串，卡片模式返回图片消息段，失败降级为文本。"""
     if _conf("response_style") == "text":
         # 纯文本模式
-        lines = ["🎵 MikuBot 功能菜单"]
-        lines.append("─" * 30)
-        for p in plugins:
-            lines.append(f"[{p['index']}] {p['icon']} {p['name']}")
-        lines.append("─" * 30)
-        lines.append("💡 发送「详细帮助+插件名/编号」获取详情，例如：详细帮助 天气 / 详细帮助 1")
-        await menu_cmd.finish("\n".join(lines))
-        return
+        return _build_menu_text(True)
 
     # 图片卡片模式
+    plugins = get_all_plugins()
     try:
         bg_data_uri = find_and_load_bg("menu", TEMPLATES_DIR)
 
@@ -175,18 +185,20 @@ async def _handle_menu():
             height=card_height,
         )
 
-        await menu_cmd.finish(MessageSegment.image(to_image_uri(img_path)))
-    except FinishedException:
-        raise
+        return MessageSegment.image(to_image_uri(img_path))
     except Exception as e:
         # 降级到纯文本
-        lines = ["🎵 MikuBot 功能菜单"]
-        lines.append("─" * 30)
-        for p in plugins:
-            lines.append(f"[{p['index']}] {p['icon']} {p['name']}")
-        lines.append("─" * 30)
-        lines.append("💡 发送「详细帮助+插件名/编号」获取详情")
-        await menu_cmd.finish("\n".join(lines))
+        logger.warning(f"[miku_menu] 菜单卡片生成失败，回退纯文本: {type(e).__name__}: {e}")
+        return _build_menu_text(False)
+
+
+@menu_cmd.handle()
+async def _handle_menu():
+    """处理菜单指令"""
+    if not _is_enabled():
+        return
+
+    await menu_cmd.finish(await _build_menu_reply())
 
 
 @detail_cmd.handle()
@@ -355,6 +367,39 @@ async def _handle_detail_help(event: Event):
             lines.append("📝 使用方法：")
             lines.append(info["usage"])
         await detail_cmd.finish("\n".join(lines))
+
+
+# ============================================================
+# AI 动作（查看功能菜单）
+# ============================================================
+async def _ai_menu(ctx: "ActionContext") -> dict:
+    """AI 动作：复用菜单渲染，发送走 ctx.emit。"""
+    if not _is_enabled():
+        return {"status": "skip"}
+
+    try:
+        payload = await _build_menu_reply()
+    except Exception as e:
+        logger.exception(f"[miku_menu] AI 动作生成菜单失败: {e}")
+        return {"status": "error", "reply": "呜...菜单生成失败了，等一下再试试吧～"}
+
+    await ctx.emit(payload)
+    return {"status": "ok"}
+
+
+if register_ai_action is not None:
+    register_ai_action(
+        "menu.show",
+        plugin="miku_menu",
+        plugin_display="菜单",
+        description="展示 MikuBot 的功能菜单（有哪些功能可以用）",
+        handler=_ai_menu,
+        params={},
+        examples=["你会什么", "能做什么", "有什么功能"],
+        keywords=["你会什么", "能做什么", "有什么功能", "功能列表"],
+        mode="action",
+        order=50,
+    )
 
 
 # ── 导出注册函数供其他插件使用 ──

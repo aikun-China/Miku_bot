@@ -139,20 +139,27 @@ like_cmd = on_command(
 )
 
 
-@like_cmd.handle()
-async def handle_like(bot: Bot, event: MessageEvent):
+async def send_like(bot: Bot, event: MessageEvent, emit=None) -> dict:
+    """给调用者点赞（命令与 AI 动作共用）。
+
+    - emit：发消息函数，默认 like_cmd.send；AI 动作传 ctx.emit
+    - 返回：{"status": "ok"}（已通过 emit 发完提示）/ {"status": "skip"}（插件未启用）
+    """
+    if emit is None:
+        emit = like_cmd.send
+
     if not _is_enabled():
-        return
+        return {"status": "skip"}
 
     user_id = event.user_id
 
     # 每日限制
     daily_limit = int(_conf("daily_limit", 1))
     if daily_limit > 0 and _has_liked_today(user_id):
-        await like_cmd.finish(
+        await emit(
             MessageSegment.at(user_id) + "\n请不要这么贪心，今天已经点过赞了哦！"
         )
-        return
+        return {"status": "ok"}
 
     rounds = max(1, int(_conf("like_rounds", 5)))
     times_per_round = max(1, min(10, int(_conf("like_times_per_round", 10))))
@@ -169,16 +176,47 @@ async def handle_like(bot: Bot, event: MessageEvent):
 
     if like_count > 0:
         _record_like(user_id, like_count)
-        await like_cmd.finish(
+        await emit(
             MessageSegment.at(user_id)
             + f"\n🎵 Miku 给你点了 {like_count} 个赞哦，不客气！"
         )
     elif failed:
-        await like_cmd.finish(
+        await emit(
             MessageSegment.at(user_id) + "\n点赞失败了，可能是今天已经点过或接口受限..."
         )
     else:
-        await like_cmd.finish(MessageSegment.at(user_id) + "\n点赞没有成功...")
+        await emit(MessageSegment.at(user_id) + "\n点赞没有成功...")
+    return {"status": "ok"}
+
+
+@like_cmd.handle()
+async def handle_like(bot: Bot, event: MessageEvent):
+    await send_like(bot, event, emit=like_cmd.send)
+
+
+# ============================================================
+# AI 动作注册：like.me
+# ============================================================
+try:
+    from utils.ai_actions import ActionContext, register_ai_action
+
+    async def _ai_like_me(ctx: ActionContext) -> dict:
+        """AI 动作 like.me：给当前用户点赞。"""
+        return await send_like(ctx.bot, ctx.event, emit=ctx.emit)
+
+    register_ai_action(
+        "like.me",
+        plugin="miku_send_like",
+        plugin_display="点赞",
+        description="给当前用户点赞（每次 50 个，受每日次数限制）",
+        handler=_ai_like_me,
+        params={},
+        examples=["给我点个赞", "赞我", "点赞"],
+        keywords=["点赞", "点个赞", "赞我", "给我点个赞"],
+        order=60,
+    )
+except ImportError:
+    pass
 
 
 # ============================================================

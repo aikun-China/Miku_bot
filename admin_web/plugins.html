@@ -266,6 +266,7 @@ let currentPlugins = [];
 let currentSection = null;
 let currentItems = [];
 let currentAiPlatforms = [];
+let currentSpecialUsers = [];
 
 // HTML 转义 — 防止特殊字符破坏结构
 function _escapeHtml(s) {
@@ -466,14 +467,56 @@ async function loadPluginConfig(pluginName) {
             data.ai_model_config && Array.isArray(data.ai_model_config.ai_platforms)
             ? data.ai_model_config.ai_platforms
             : [];
+        currentSpecialUsers = [];
         if (pluginName === "miku_ai") {
             currentItems.push({
                 key: "ai_platforms",
                 label: "AI平台列表",
-                hint: "平台连接配置保存在全局 AI 模型配置中。",
+                hint: "平台连接配置保存在全局 AI 模型配置中。本地模型（Ollama / LM Studio 等 OpenAI 兼容服务）也在下方添加：Base URL 填本机地址（如 http://localhost:11434/v1），API Key 可留空。",
                 is_ai_platforms: true
             });
         }
+        // 解析 special_users 并移除原始条目（兼容 JSON 和 Python 字典字面量两种格式）
+        function _parseSpecialUsersValue(val) {
+            if (!val) return [];
+            try {
+                var parsed = JSON.parse(val);
+                return Array.isArray(parsed) ? parsed : [];
+            } catch(e) {
+                var lines = val.split("\n").filter(function(l) { return l.trim(); });
+                var result = [];
+                for (var i = 0; i < lines.length; i++) {
+                    var line = lines[i].trim();
+                    if (!line) continue;
+                    var jsonStr = line
+                        .replace(/'/g, '"')
+                        .replace(/True/g, 'true')
+                        .replace(/False/g, 'false')
+                        .replace(/None/g, 'null');
+                    try {
+                        var obj = JSON.parse(jsonStr);
+                        if (obj && typeof obj === "object") result.push(obj);
+                    } catch(e2) {
+                        // 跳过无法解析的行
+                    }
+                }
+                return result;
+            }
+        }
+        currentItems = currentItems.filter(function(item) {
+            if (item.key === "special_users") {
+                currentSpecialUsers = _parseSpecialUsersValue(item.value);
+                console.log("[special_users] 解析结果:", currentSpecialUsers.length, "条", currentSpecialUsers);
+                return false;
+            }
+            return true;
+        });
+        currentItems.push({
+            key: "special_users",
+            label: "特殊人物识别",
+            hint: "通过 QQ 号和昵称识别特定的人，给 AI 加上身份设定。",
+            is_special_users: true
+        });
 
         if (!currentItems.length) {
             document.getElementById("settings-form").innerHTML =
@@ -483,7 +526,8 @@ async function loadPluginConfig(pluginName) {
                 .map(function(item, originalIdx) { return { item: item, originalIdx: originalIdx }; })
                 .filter(function(x) { return x.item.key !== "enabled"; });
             filteredItems.sort(function(a, b) {
-                return Number(Boolean(b.item.is_ai_platforms)) - Number(Boolean(a.item.is_ai_platforms));
+                return Number(Boolean(b.item.is_ai_platforms)) - Number(Boolean(a.item.is_ai_platforms)) ||
+                       Number(Boolean(b.item.is_special_users)) - Number(Boolean(a.item.is_special_users));
             });
 
             let formHtml = '';
@@ -497,14 +541,29 @@ async function loadPluginConfig(pluginName) {
                 if (item.is_ai_platforms) {
                     formHtml +=
                         '<div style="padding:14px 0;border-bottom:1px solid #eee;">' +
-                            '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">' +
+                            '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">' +
                                 '<div style="font-size:13px;font-weight:600;">AI平台列表</div>' +
-                                '<button type="button" onclick="addAiPlatform(' + originalIdx + ')" style="padding:8px 14px;border:0;border-radius:6px;background:linear-gradient(135deg,#2BA89E,#3A6E8E);color:#fff;cursor:pointer;">＋ 添加AI</button>' +
+                                '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+                                    '<button type="button" onclick="addAiPlatform(' + originalIdx + ')" style="padding:8px 14px;border:0;border-radius:6px;background:linear-gradient(135deg,#2BA89E,#3A6E8E);color:#fff;cursor:pointer;">＋ 添加AI</button>' +
+                                    '<button type="button" onclick="addLocalAiPlatform(' + originalIdx + ')" style="padding:8px 14px;border:1px solid #2BA89E;border-radius:6px;background:#fff;color:#2BA89E;cursor:pointer;">＋ 添加本地模型</button>' +
+                                '</div>' +
                             '</div>' +
                             '<div id="ai-platform-list-' + originalIdx + '" style="margin-top:8px;"></div>' +
                                     (hint || '') +
-                                    '<div style="margin-top:6px;font-size:12px;color:#999;">拖动平台左侧把手可调整顺序，排序会自动保存。</div>' +
+                                    '<div style="margin-top:6px;font-size:12px;color:#999;">拖动平台左侧把手可调整顺序，排序会自动保存；本地模型与云端平台一样参与故障转移。</div>' +
                                 '</div>';
+                } else if (item.is_special_users) {
+                    const hint_html = hint ? '<div style="margin-top:6px;font-size:12px;color:#999;">' + _escapeHtml(item.hint) + '</div>' : '';
+                    formHtml +=
+                        '<div style="padding:14px 0;border-bottom:1px solid #eee;">' +
+                            '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">' +
+                                '<div style="font-size:13px;font-weight:600;">特殊人物识别</div>' +
+                                '<button type="button" onclick="addSpecialUser()" style="padding:8px 14px;border:0;border-radius:6px;background:linear-gradient(135deg,#2BA89E,#3A6E8E);color:#fff;cursor:pointer;">＋ 添加人物</button>' +
+                            '</div>' +
+                            '<div id="special-user-list-' + originalIdx + '" style="margin-top:8px;"></div>' +
+                            hint_html +
+                            '<div style="margin-top:6px;font-size:12px;color:#999;">拖动条目左侧把手可调整顺序，排序会在关闭弹窗时自动保存。</div>' +
+                        '</div>';
                 } else if (isList) {
                     formHtml += 
                         '<div style="display:flex;gap:16px;padding:14px 0;border-bottom:1px solid #eee;">' +
@@ -537,6 +596,7 @@ async function loadPluginConfig(pluginName) {
             document.getElementById("settings-form").innerHTML = formHtml;
             currentItems.forEach(function(item, index) {
                 if (item.is_ai_platforms) renderAiPlatformList(index);
+                if (item.is_special_users) renderSpecialUserList(index);
             });
         }
     } catch (e) {
@@ -556,16 +616,20 @@ function renderAiPlatformList(itemIndex) {
     }
     list.innerHTML = currentAiPlatforms.map(function(platform, index) {
         const name = String(platform.name || "").trim() || "未命名AI";
+        const isLocal = /localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]/.test(String(platform.base_url || "").toLowerCase());
+        const localBadge = isLocal
+            ? '<span style="margin-left:6px;padding:1px 6px;border-radius:8px;background:#e8f6f4;color:#1f8a80;font-size:11px;font-weight:500;vertical-align:middle;">本地</span>'
+            : '';
         return '<div data-platform-index="' + index + '" style="display:flex;align-items:center;gap:10px;padding:4px 8px;margin:8px 0;border:1px solid #ddd;border-radius:8px;background:#fff;">' +
             '<span draggable="true" title="拖动调整顺序" aria-label="拖动调整顺序" style="padding:6px;color:#888;cursor:grab;user-select:none;">⠿</span>' +
             '<button type="button" onclick="openAiPlatformEditor(' + itemIndex + ',' + index + ')" ' +
                 'style="flex:1;text-align:left;padding:8px 4px;border:0;background:transparent;cursor:pointer;">' +
-                '<span style="font-weight:600;">' + _escapeHtml(name) + '</span>' +
+                '<span style="font-weight:600;">' + _escapeHtml(name) + localBadge + '</span>' +
                 '<span style="float:right;color:#888;">配置 ›</span></button></div>';
     }).join("");
 
     let draggedIndex = null;
-    list.ondragstart = function(event) {
+    list.addEventListener("dragstart", function(event) {
         const handle = event.target.closest("[draggable='true']");
         const row = handle && handle.closest("[data-platform-index]");
         if (!row) return;
@@ -573,28 +637,28 @@ function renderAiPlatformList(itemIndex) {
         row.style.opacity = "0.45";
         event.dataTransfer.effectAllowed = "move";
         event.dataTransfer.setData("text/plain", String(draggedIndex));
-    };
-    list.ondragend = function() {
+    });
+    list.addEventListener("dragend", function() {
         draggedIndex = null;
         list.querySelectorAll("[data-platform-index]").forEach(function(row) {
             row.style.opacity = "";
             row.style.borderColor = "#ddd";
         });
-    };
-    list.ondragover = function(event) {
+    });
+    list.addEventListener("dragover", function(event) {
         const row = event.target.closest("[data-platform-index]");
         if (!row || Number(row.dataset.platformIndex) === draggedIndex) return;
         event.preventDefault();
         event.dataTransfer.dropEffect = "move";
         row.style.borderColor = "#2BA89E";
-    };
-    list.ondragleave = function(event) {
+    });
+    list.addEventListener("dragleave", function(event) {
         const row = event.target.closest("[data-platform-index]");
         if (row && !row.contains(event.relatedTarget)) row.style.borderColor = "#ddd";
-    };
-    list.ondrop = async function(event) {
+    });
+    list.addEventListener("drop", async function(event) {
         const row = event.target.closest("[data-platform-index]");
-        if (!row || draggedIndex === null || Number(row.dataset.platformIndex) === draggedIndex) return;
+        if (!row || draggedIndex === null) return;
         event.preventDefault();
         const fromIndex = draggedIndex;
         const targetIndex = Number(row.dataset.platformIndex);
@@ -614,7 +678,7 @@ function renderAiPlatformList(itemIndex) {
             renderAiPlatformList(itemIndex);
             Toast.error("调整AI平台顺序失败: " + e.message);
         }
-    };
+    });
 }
 
 async function saveAiPlatforms(platforms) {
@@ -640,6 +704,24 @@ async function addAiPlatform(itemIndex) {
     }
 }
 
+async function addLocalAiPlatform(itemIndex) {
+    const platform = {
+        name: "本地模型",
+        api_key: "",
+        base_url: "http://localhost:11434/v1",
+        model: "",
+        text_model: ""
+    };
+    const updated = currentAiPlatforms.concat([platform]);
+    try {
+        await saveAiPlatforms(updated);
+        renderAiPlatformList(itemIndex);
+        openAiPlatformEditor(itemIndex, updated.length - 1);
+    } catch (e) {
+        Toast.error("新增本地模型失败: " + e.message);
+    }
+}
+
 function openAiPlatformEditor(itemIndex, platformIndex) {
     const platform = currentAiPlatforms[platformIndex];
     if (!platform) return;
@@ -654,15 +736,15 @@ function openAiPlatformEditor(itemIndex, platformIndex) {
                 '<button type="button" data-action="close" style="border:0;background:none;font-size:24px;color:#888;cursor:pointer;">×</button>' +
             '</div>' +
             '<label style="display:block;margin:12px 0 6px;">平台名称</label>' +
-            '<input id="ai-platform-name" type="text" value="' + _escapeHtml(platform.name || "") + '" style="box-sizing:border-box;width:100%;padding:10px;border:1px solid #ccc;border-radius:6px;">' +
-            '<label style="display:block;margin:12px 0 6px;">API Key</label>' +
+            '<input id="ai-platform-name" type="text" value="' + _escapeHtml(platform.name || "") + '" placeholder="例如：云端平台 / 本地模型" style="box-sizing:border-box;width:100%;padding:10px;border:1px solid #ccc;border-radius:6px;">' +
+            '<label style="display:block;margin:12px 0 6px;">API Key <span style="color:#999;font-weight:400;">（本地模型可留空）</span></label>' +
             '<input id="ai-platform-key" type="password" autocomplete="new-password" value="' + _escapeHtml(platform.api_key || "") + '" style="box-sizing:border-box;width:100%;padding:10px;border:1px solid #ccc;border-radius:6px;">' +
             '<label style="display:block;margin:12px 0 6px;">Base URL</label>' +
-            '<input id="ai-platform-url" type="url" value="' + _escapeHtml(platform.base_url || "") + '" placeholder="https://api.example.com/v1" style="box-sizing:border-box;width:100%;padding:10px;border:1px solid #ccc;border-radius:6px;">' +
-            '<label style="display:block;margin:12px 0 6px;">多模态模型名</label>' +
-            '<input id="ai-platform-model" type="text" value="' + _escapeHtml(platform.model || "") + '" style="box-sizing:border-box;width:100%;padding:10px;border:1px solid #ccc;border-radius:6px;">' +
+            '<input id="ai-platform-url" type="url" value="' + _escapeHtml(platform.base_url || "") + '" placeholder="https://api.example.com/v1 或 http://localhost:11434/v1" style="box-sizing:border-box;width:100%;padding:10px;border:1px solid #ccc;border-radius:6px;">' +
+            '<label style="display:block;margin:12px 0 6px;">模型名 <span style="color:#999;font-weight:400;">（多模态；纯文本模型也填此项）</span></label>' +
+            '<input id="ai-platform-model" type="text" value="' + _escapeHtml(platform.model || "") + '" placeholder="例如：gpt-4o / qwen2.5:7b" style="box-sizing:border-box;width:100%;padding:10px;border:1px solid #ccc;border-radius:6px;">' +
             '<label style="display:block;margin:12px 0 6px;">纯文本模型名（选填）</label>' +
-            '<input id="ai-platform-text-model" type="text" value="' + _escapeHtml(platform.text_model || "") + '" style="box-sizing:border-box;width:100%;padding:10px;border:1px solid #ccc;border-radius:6px;">' +
+            '<input id="ai-platform-text-model" type="text" value="' + _escapeHtml(platform.text_model || "") + '" placeholder="留空则沿用上面的模型名" style="box-sizing:border-box;width:100%;padding:10px;border:1px solid #ccc;border-radius:6px;">' +
             '<div style="display:flex;justify-content:space-between;gap:10px;margin-top:24px;">' +
                 '<button type="button" data-action="delete" style="padding:9px 16px;border:1px solid #d44;border-radius:6px;background:#fff;color:#c33;cursor:pointer;">删除平台</button>' +
                 '<div style="display:flex;gap:10px;">' +
@@ -691,7 +773,7 @@ function openAiPlatformEditor(itemIndex, platformIndex) {
                 text_model: document.getElementById("ai-platform-text-model").value.trim()
             };
             if (!updatedPlatform.name || !updatedPlatform.base_url || !updatedPlatform.model) {
-                Toast.error("平台名称、Base URL 和多模态模型名不能为空");
+                Toast.error("平台名称、Base URL 和模型名不能为空");
                 return;
             }
             const updated = currentAiPlatforms.slice();
@@ -724,13 +806,209 @@ function openAiPlatformEditor(itemIndex, platformIndex) {
     document.body.appendChild(overlay);
 }
 
+async function saveSpecialUsers() {
+    await api.plugins.update("miku_ai", { special_users: currentSpecialUsers });
+}
+
+function renderSpecialUserList(itemIndex) {
+    const list = document.getElementById("special-user-list-" + itemIndex);
+    if (!list) return;
+    if (!currentSpecialUsers.length) {
+        list.innerHTML = '<div style="color:#999;padding:12px 0;">尚未添加特殊人物</div>';
+        return;
+    }
+    list.innerHTML = currentSpecialUsers.map(function(user, index) {
+        const qqList = Array.isArray(user.qq) ? user.qq.map(String) : [];
+        const nicknames = Array.isArray(user.nicknames) ? user.nicknames : [];
+        const identity = String(user.identity || "").trim() || "未设置身份";
+        const qqText = qqList.length > 0 ? qqList.join(", ") : (nicknames.length > 0 ? nicknames.join(", ") : "未设置");
+        return '<div data-special-user-index="' + index + '" style="display:flex;align-items:center;gap:10px;padding:4px 8px;margin:8px 0;border:1px solid #ddd;border-radius:8px;background:#fff;">' +
+            '<span draggable="true" title="拖动调整顺序" aria-label="拖动调整顺序" style="padding:6px;color:#888;cursor:grab;user-select:none;font-size:16px;">⠿</span>' +
+            '<button type="button" onclick="openSpecialUserEditor(' + itemIndex + ',' + index + ')" ' +
+                'style="flex:1;text-align:left;padding:8px 4px;border:0;background:transparent;cursor:pointer;">' +
+                '<span style="font-weight:600;font-size:13px;">' + _escapeHtml(identity) + '</span>' +
+                '<span style="display:block;font-size:11px;color:#888;margin-top:2px;">QQ/昵称: ' + _escapeHtml(qqText) + '</span>' +
+                '<span style="float:right;color:#888;">配置 ›</span></button></div>';
+    }).join("");
+
+    // 拖拽排序
+    let draggedIndex = null;
+    list.addEventListener("dragstart", function(event) {
+        const handle = event.target.closest("[draggable='true']");
+        const row = handle && handle.closest("[data-special-user-index]");
+        if (!row) return;
+        draggedIndex = Number(row.dataset.specialUserIndex);
+        row.style.opacity = "0.45";
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", String(draggedIndex));
+    });
+    list.addEventListener("dragend", function() {
+        draggedIndex = null;
+        list.querySelectorAll("[data-special-user-index]").forEach(function(row) {
+            row.style.opacity = "";
+            row.style.borderColor = "#ddd";
+        });
+    });
+    list.addEventListener("dragover", function(event) {
+        const row = event.target.closest("[data-special-user-index]");
+        if (!row || Number(row.dataset.specialUserIndex) === draggedIndex) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        row.style.borderColor = "#2BA89E";
+    });
+    list.addEventListener("dragleave", function(event) {
+        const row = event.target.closest("[data-special-user-index]");
+        if (row && !row.contains(event.relatedTarget)) row.style.borderColor = "#ddd";
+    });
+    list.addEventListener("drop", async function(event) {
+        const row = event.target.closest("[data-special-user-index]");
+        if (!row || draggedIndex === null) return;
+        event.preventDefault();
+        const fromIndex = draggedIndex;
+        const targetIndex = Number(row.dataset.specialUserIndex);
+        const insertBefore = event.clientY < row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2;
+        const reordered = currentSpecialUsers.slice();
+        const moved = reordered.splice(fromIndex, 1)[0];
+        let insertIndex = targetIndex;
+        if (fromIndex < targetIndex) insertIndex--;
+        if (!insertBefore) insertIndex++;
+        reordered.splice(insertIndex, 0, moved);
+        if (reordered.every(function(u, i) { return u === currentSpecialUsers[i]; })) return;
+        currentSpecialUsers = reordered;
+        try {
+            await saveSpecialUsers();
+            renderSpecialUserList(itemIndex);
+            Toast.success("特殊人物顺序已保存");
+        } catch (e) {
+            renderSpecialUserList(itemIndex);
+            Toast.error("调整特殊人物顺序失败: " + e.message);
+        }
+    });
+}
+
+async function addSpecialUser() {
+    const newUser = {
+        qq: [],
+        nicknames: [],
+        identity: "",
+        description: "",
+        address_as: "",
+        tone: ""
+    };
+    currentSpecialUsers.push(newUser);
+    try {
+        await saveSpecialUsers();
+        loadPluginConfig(currentSection.name);
+        openSpecialUserEditor(-1, currentSpecialUsers.length - 1);
+    } catch (e) {
+        Toast.error("新增特殊人物失败: " + e.message);
+    }
+}
+
+function openSpecialUserEditor(itemIndex, userIndex) {
+    let user;
+    if (userIndex >= 0) {
+        user = currentSpecialUsers[userIndex];
+    } else {
+        // 从添加按钮调用，此时 userIndex=-1，itemIndex 无效
+        user = currentSpecialUsers[currentSpecialUsers.length - 1];
+    }
+    if (!user) return;
+    const isEditing = userIndex >= 0;
+
+    const overlay = document.createElement("div");
+    overlay.id = "special-user-editor";
+    overlay.style.cssText = "position:fixed;inset:0;z-index:10001;background:rgba(20,30,40,.55);display:flex;align-items:center;justify-content:center;padding:20px;";
+    overlay.innerHTML =
+        '<div style="background:#fff;border-radius:12px;padding:24px;width:100%;max-width:520px;max-height:85vh;overflow:auto;box-shadow:0 12px 40px rgba(31,58,74,.24);">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">' +
+                '<strong style="font-size:18px;">' + (isEditing ? '编辑特殊人物' : '新增特殊人物') + '</strong>' +
+                '<button type="button" data-action="close" style="border:0;background:none;font-size:24px;color:#888;cursor:pointer;">×</button>' +
+            '</div>' +
+            '<label style="display:block;margin:12px 0 6px;">QQ 号列表 <span style="color:#999;font-weight:400;">（每行一个）</span></label>' +
+            '<textarea id="su-qq" rows="2" style="box-sizing:border-box;width:100%;padding:10px;border:1px solid #ccc;border-radius:6px;font-family:monospace;font-size:13px;resize:vertical;">' + _escapeTextareaContent(Array.isArray(user.qq) ? user.qq.join("\n") : "") + '</textarea>' +
+            '<label style="display:block;margin:12px 0 6px;">昵称关键词 <span style="color:#999;font-weight:400;">（子串匹配，每行一个）</span></label>' +
+            '<textarea id="su-nicknames" rows="2" style="box-sizing:border-box;width:100%;padding:10px;border:1px solid #ccc;border-radius:6px;font-family:monospace;font-size:13px;resize:vertical;">' + _escapeTextareaContent(Array.isArray(user.nicknames) ? user.nicknames.join("\n") : "") + '</textarea>' +
+            '<label style="display:block;margin:12px 0 6px;">身份描述</label>' +
+            '<input id="su-identity" type="text" value="' + _escapeHtml(user.identity || "") + '" placeholder="例如：我的开发者兼主人" style="box-sizing:border-box;width:100%;padding:10px;border:1px solid #ccc;border-radius:6px;">' +
+            '<label style="display:block;margin:12px 0 6px;">详细描述</label>' +
+            '<textarea id="su-description" rows="3" style="box-sizing:border-box;width:100%;padding:10px;border:1px solid #ccc;border-radius:6px;font-family:"JetBrains Mono",monospace;font-size:13px;resize:vertical;">' + _escapeTextareaContent(user.description || "") + '</textarea>' +
+            '<label style="display:block;margin:12px 0 6px;">称呼方式</label>' +
+            '<input id="su-address-as" type="text" value="' + _escapeHtml(user.address_as || "") + '" placeholder="例如：ご主人様 / 狗修金" style="box-sizing:border-box;width:100%;padding:10px;border:1px solid #ccc;border-radius:6px;">' +
+            '<label style="display:block;margin:12px 0 6px;">语气调整</label>' +
+            '<textarea id="su-tone" rows="3" style="box-sizing:border-box;width:100%;padding:10px;border:1px solid #ccc;border-radius:6px;font-family:"JetBrains Mono",monospace;font-size:13px;resize:vertical;">' + _escapeTextareaContent(user.tone || "") + '</textarea>' +
+            '<div style="display:flex;justify-content:space-between;gap:10px;margin-top:24px;">' +
+                (isEditing ? '<button type="button" data-action="delete" style="padding:9px 16px;border:1px solid #d44;border-radius:6px;background:#fff;color:#c33;cursor:pointer;">删除人物</button>' : '<div></div>') +
+                '<div style="display:flex;gap:10px;">' +
+                    '<button type="button" data-action="cancel" style="padding:9px 16px;border:1px solid #ccc;border-radius:6px;background:#f5f5f5;cursor:pointer;">取消</button>' +
+                    '<button type="button" data-action="save" style="padding:9px 16px;border:0;border-radius:6px;background:linear-gradient(135deg,#2BA89E,#3A6E8E);color:#fff;cursor:pointer;">保存人物</button>' +
+                '</div>' +
+            '</div>' +
+        '</div>';
+
+    function closeEditor() {
+        overlay.remove();
+    }
+
+    overlay.addEventListener("click", async function(event) {
+        const action = event.target.dataset.action;
+        if (event.target === overlay || action === "close" || action === "cancel") {
+            closeEditor();
+            return;
+        }
+        if (action === "save") {
+            const qqLines = document.getElementById("su-qq").value.split("\n").map(function(l){return l.trim();}).filter(Boolean);
+            const nicknameLines = document.getElementById("su-nicknames").value.split("\n").map(function(l){return l.trim();}).filter(Boolean);
+            const updatedUser = {
+                qq: qqLines,
+                nicknames: nicknameLines,
+                identity: document.getElementById("su-identity").value.trim(),
+                description: document.getElementById("su-description").value.trim(),
+                address_as: document.getElementById("su-address-as").value.trim(),
+                tone: document.getElementById("su-tone").value.trim()
+            };
+            if (!updatedUser.identity) {
+                Toast.error("身份描述不能为空");
+                return;
+            }
+            if (isEditing) {
+                currentSpecialUsers[userIndex] = updatedUser;
+            } else {
+                currentSpecialUsers[currentSpecialUsers.length - 1] = updatedUser;
+            }
+            try {
+                await saveSpecialUsers();
+                loadPluginConfig(currentSection.name);
+                closeEditor();
+                Toast.success("特殊人物已保存");
+            } catch (e) {
+                Toast.error("保存失败: " + e.message);
+            }
+            return;
+        }
+        if (action === "delete") {
+            if (!confirm("确定删除该特殊人物吗？")) return;
+            currentSpecialUsers.splice(userIndex, 1);
+            try {
+                await saveSpecialUsers();
+                loadPluginConfig(currentSection.name);
+                closeEditor();
+                Toast.success("特殊人物已删除");
+            } catch (e) {
+                Toast.error("删除失败: " + e.message);
+            }
+        }
+    });
+    document.body.appendChild(overlay);
+}
+
 async function savePluginSettings() {
     if (!currentSection) return;
     const items = [];
     // 用 currentItems 的索引查找元素，元素的 id 是 "setting-" + 原始索引
     for (let i = 0; i < currentItems.length; i++) {
         const el = document.getElementById("setting-" + i);
-        if (el && currentItems[i].key !== "ai_platforms") {
+        if (el && currentItems[i].key !== "ai_platforms" && currentItems[i].key !== "special_users") {
             items.push({
                 key: el.dataset.key,
                 value: el.value,
@@ -758,6 +1036,7 @@ function closeSettingsModal() {
     currentSection = null;
     currentItems = [];
     currentAiPlatforms = [];
+    currentSpecialUsers = [];
 }
 
 function testModal() {

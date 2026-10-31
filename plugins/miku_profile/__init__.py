@@ -39,6 +39,11 @@ from utils.anime_quotes import random_quote
 
 import json
 
+try:
+    from utils.ai_actions import register_ai_action, ActionContext
+except ImportError:
+    register_ai_action = None
+
 
 _PROFILE_TEMPLATE = (
     "\n"
@@ -239,6 +244,81 @@ async def _render_text_profile(user_id: int, nickname: str) -> str:
         "发送「签到」获取更多奖励",
     ]
     return "\n".join(lines)
+
+
+# ============================================================
+# AI 动作（查看个人资料）
+# ============================================================
+
+# 口语说法：「我有多少金币」「我金币多少」「我签到了几天」
+# 注意 1：「我跟你好感度多少」已被 miku_ai 的 favor.query 覆盖，这里不再注册，
+#         否则会把好感度查询抢到个人资料上。
+# 注意 2：miku_shop 的 shop.query 有一条很宽的正则
+#         ^(?:我)?(?:有|还有|剩...)...(?P<item>.+)?$（order=23），会把
+#         「我有多少金币」抓成 item=金币。profile.me 用更低的 order 先匹配，
+#         只在「我的金币/钱/签到天数」这类个人资料说法上生效。
+_PROFILE_PATTERNS = [
+    r"^(?:我(?:现在)?(?:有)?|有)(?:多少|几)(?:个)?(?:金币|钱)(?:了|呢|啊)?[?？]?$",
+    r"^(?:我)?(?:金币|钱)(?:有)?(?:多少|几)(?:了|呢)?[?？]?$",
+    r"^(?:我)?(?:已经|累计|一共|总共|现在)?(?:签到|打卡)(?:了)?(?:多少|几)(?:天|次)(?:了|呢)?[?？]?$",
+]
+
+
+def _ai_profile_nickname(ctx: "ActionContext", user_id: str) -> str:
+    """取昵称：优先事件发送者昵称，其次 ctx.nickname，最后用 QQ 号。"""
+    nickname = ""
+    try:
+        sender = getattr(ctx.event, "sender", None)
+        if sender is not None and getattr(sender, "nickname", None):
+            nickname = str(sender.nickname)
+    except Exception:
+        nickname = ""
+    if not nickname:
+        nickname = ctx.nickname
+    return nickname or str(user_id)
+
+
+async def _ai_profile(ctx: "ActionContext") -> dict:
+    """AI 动作：复用卡片/文本渲染，发到当前会话。"""
+    if not _conf("enabled", True):
+        return {"status": "skip"}
+
+    user_id = ctx.user_id or str(getattr(ctx.event, "user_id", "") or "")
+    if not user_id:
+        return {"status": "error", "reply": "获取用户信息失败，请稍后再试"}
+
+    nickname = _ai_profile_nickname(ctx, user_id)
+    uid = int(user_id) if str(user_id).isdigit() else user_id
+
+    try:
+        if str(_conf("response_style", "card") or "card") == "card":
+            card_uri = await _render_profile_card(uid, nickname)
+            if card_uri:
+                await ctx.emit(MessageSegment.image(card_uri))
+                return {"status": "ok"}
+    except Exception as e:
+        logger.warning(f"[miku_profile] AI 动作卡片渲染失败，回退文本: {type(e).__name__}: {e}")
+
+    await ctx.emit(await _render_text_profile(uid, nickname))
+    return {"status": "ok"}
+
+
+if register_ai_action is not None:
+    register_ai_action(
+        "profile.me",
+        plugin="miku_profile",
+        plugin_display="个人资料",
+        description="查看自己的个人资料（好感度、金币、签到天数等）",
+        handler=_ai_profile,
+        params={},
+        examples=["我的资料", "我有多少金币", "看看我的信息"],
+        patterns=_PROFILE_PATTERNS,
+        keywords=[
+            "我的信息", "我的资料", "个人资料", "我的金币", "我有多少",
+        ],
+        mode="action",
+        order=18,
+    )
 
 
 profile_cmd = on_command(

@@ -19,23 +19,35 @@ BACKUP_DIR = CONFIG_DIR / "backups"
 
 AI_MODEL_DEFAULTS: Dict[str, Any] = {
     "ai_platforms": [],
-    "local_base_url": "http://localhost:11434/v1",
-    "local_model": "qwen2.5:7b",
-    "local_api_key": "",
 }
-AI_MODEL_CONFIG_KEYS = frozenset(AI_MODEL_DEFAULTS)
+# 旧版本地模型配置键：仅用于从 bot.yaml/ai_models.yaml 迁移到 ai_platforms，运行时不再使用
+LEGACY_LOCAL_KEYS = ("local_base_url", "local_model", "local_api_key")
+AI_MODEL_CONFIG_KEYS = frozenset(AI_MODEL_DEFAULTS) | frozenset(LEGACY_LOCAL_KEYS)
 _AI_MODEL_CONFIG_HEADER = (
     "# 全局 AI 模型连接配置，与 miku_ai 插件参数分离。\n"
     "# ai_platforms 按顺序故障转移；model 用于多模态，text_model 留空时沿用 model。\n"
-    "# 平台字段示例：name / api_key / base_url / model / text_model\n"
+    "# 平台字段：name / api_key / base_url / model / text_model\n"
     "#\n"
-    "# - name: 示例平台\n"
+    "# - name: 示例云端平台\n"
     "#   api_key: 'sk-xxx'\n"
     "#   base_url: https://api.example.com/v1\n"
     "#   model: vision-model\n"
     "#   text_model: ''\n"
-    "# 本地 OpenAI 兼容服务仅在 ai_platforms 为空时作为兜底。\n"
+    "#\n"
+    "# 本地 OpenAI 兼容服务（Ollama / LM Studio 等）也作为普通平台配置，api_key 可留空：\n"
+    "# - name: 本地模型\n"
+    "#   api_key: ''\n"
+    "#   base_url: http://localhost:11434/v1\n"
+    "#   model: qwen2.5:7b\n"
+    "#   text_model: ''\n"
 )
+
+_LOCAL_HOST_MARKERS = ("localhost", "127.0.0.1", "0.0.0.0", "[::1]", "::1")
+
+
+def _is_local_base_url(url: Any) -> bool:
+    text = str(url or "").strip().lower()
+    return any(marker in text for marker in _LOCAL_HOST_MARKERS)
 
 
 def _validate_ai_model_config(data: Any) -> Dict[str, Any]:
@@ -49,9 +61,6 @@ def _validate_ai_model_config(data: Any) -> Dict[str, Any]:
     platforms = config.get("ai_platforms")
     if not isinstance(platforms, list) or any(not isinstance(item, dict) for item in platforms):
         raise ValueError("ai_platforms 必须是对象数组")
-    for key in ("local_base_url", "local_model", "local_api_key"):
-        if not isinstance(config.get(key), str):
-            raise ValueError(f"{key} 必须是字符串")
     return config
 
 
@@ -115,6 +124,54 @@ def save_ai_model_config(data: Dict[str, Any]) -> Dict[str, Any]:
         if temp_file.exists():
             temp_file.unlink()
     return validated
+
+
+def migrate_local_model_to_platforms() -> bool:
+    """把旧版 local_base_url/local_model/local_api_key 迁移为 ai_platforms 中的普通平台。
+
+    迁移后本地模型与云端平台完全同构：可在 WebUI「AI平台列表」中编辑/排序/删除，
+    并参与按顺序故障转移。迁移只执行一次，完成后删除旧键，避免删除平台后被重新加回。
+    """
+    if not AI_MODEL_CONFIG_FILE.exists():
+        return False
+    try:
+        config = get_ai_model_config()
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        logger.warning(f"[AI 配置] 读取 ai_models.yaml 失败，跳过本地模型迁移: {exc}")
+        return False
+
+    if not any(key in config for key in LEGACY_LOCAL_KEYS):
+        return False
+
+    local_url = str(config.get("local_base_url", "") or "").strip().rstrip("/")
+    local_model = str(config.get("local_model", "") or "").strip()
+    local_key = str(config.get("local_api_key", "") or "")
+    platforms = [dict(p) for p in (config.get("ai_platforms") or []) if isinstance(p, dict)]
+
+    if local_url and local_model and not any(
+        _is_local_base_url(p.get("base_url")) for p in platforms
+    ):
+        platforms.append({
+            "name": "本地模型",
+            "api_key": local_key,
+            "base_url": local_url,
+            "model": local_model,
+            "text_model": "",
+        })
+
+    for key in LEGACY_LOCAL_KEYS:
+        config.pop(key, None)
+    config["ai_platforms"] = platforms
+
+    try:
+        save_ai_model_config(config)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        logger.warning(f"[AI 配置] 本地模型迁移保存失败: {exc}")
+        return False
+    logger.info(
+        "[AI 配置] 已将本地模型迁移到 ai_platforms，可在 WebUI「AI平台列表」中编辑"
+    )
+    return True
 
 
 def _remove_legacy_ai_settings(content: str) -> str:
@@ -217,3 +274,4 @@ def migrate_legacy_ai_config() -> bool:
 
 
 LEGACY_AI_CONFIG_MIGRATED = migrate_legacy_ai_config()
+LOCAL_MODEL_MIGRATED = migrate_local_model_to_platforms()

@@ -9,6 +9,7 @@ MikuBot 管理员插件
 from nonebot import on_command, get_driver
 from nonebot.adapters.onebot.v11 import Bot, MessageEvent
 from nonebot.permission import SUPERUSER
+from nonebot.log import logger
 from nonebot.plugin import PluginMetadata
 import os
 import sys
@@ -85,6 +86,7 @@ async def _(bot: Bot, event: MessageEvent):
         return
     await restart_cmd.send("🎵 Miku 正在重启，请稍等...")
     await asyncio.sleep(1)
+    logger.warning("[Lifecycle] 收到 Bot 管理员命令重启请求，原因=OneBot「重启」指令")
     python = sys.executable
     args = sys.argv
     os.execv(python, [python] + args)

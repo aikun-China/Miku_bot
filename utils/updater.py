@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import httpx
+from nonebot.log import logger
 
 from utils.version_manager import (
     BASE_DIR,
@@ -211,6 +212,7 @@ async def do_update() -> Dict[str, Any]:
 
 def restart_bot() -> None:
     """更新完成后重启 Bot"""
+    logger.warning("[Lifecycle] 收到 Bot 重启请求，原因=自动更新完成")
     python = sys.executable
     args = sys.argv
     os.execv(python, [python] + args)

@@ -545,6 +545,144 @@ async def handle_pending(bot: Bot, event: MessageEvent):
 # ============================================================
 # 菜单注册
 # ============================================================
+# ============================================================
+# AI 动作注册（把「转发给管理员」暴露给 miku_ai 路由层）
+# ============================================================
+
+try:
+    from utils.ai_actions import register_ai_action, ActionContext
+except ImportError:  # 动作注册中心不可用时静默降级
+    register_ai_action = None
+    ActionContext = object  # type: ignore[assignment,misc]
+
+# 注意：上面的 notify_handler（priority=10, block=False）用 _NOTIFY_KEYWORDS 做
+# **开头锚定**的关键词转发，已经覆盖「通知管理员/告诉管理员/跟管理员说/
+# 帮我跟管理员/转告管理员…」。下面的 patterns 只收它**没有**收录的说法
+# （跟管理说、反馈给管理员、转告一下管理员、找管理反馈…）；两条路径重合时，
+# handler 里再调一次 _match_notify_keyword 兜底，保证不会给管理员发两遍。
+_AI_NOTIFY_PATTERNS = [
+    # 跟管理说一声机器人没反应 / 帮我跟管理员反馈一下群管插件报错了
+    r"^(?:帮我|麻烦|拜托|劳驾)?\s*(?:跟|和|向)\s*管理(?:员)?\s*"
+    r"(?:说|反馈|反映|提|讲|转告|汇报|报备|吐槽)\s*(?:一下|一声|下|声)?\s*"
+    r"[:：,，、.。!！\s]*(?P<content>.+)$",
+    # 转告一下管理员机器人挂了 / 帮我反馈一下给管理员：群管插件报错了
+    r"^(?:帮我|麻烦|拜托|请)?\s*(?:反馈|反映|转告|汇报|报备)\s*(?:一下|下|一声)\s*"
+    r"(?:给|到|向)?\s*(?:管理(?:员)?|管理们|管管)\s*"
+    r"[:：,，、.。!！\s]*(?P<content>.+)$",
+    # 帮我反馈给管理员：群管插件报错了 / 反映到管理员那边
+    r"^(?:帮我|麻烦|拜托|请)?\s*(?:反馈|反映|转告|汇报|报备)\s*(?:给|到|向)\s*"
+    r"(?:管理(?:员)?|管理们|管管)\s*"
+    r"[:：,，、.。!！\s]*(?P<content>.+)$",
+    # 能不能跟管理员说一声机器人没反应
+    r"^(?:能不能|可不可以|能否|可以|帮忙)\s*(?:跟|和|向)\s*管理(?:员)?\s*"
+    r"(?:说|反馈|反映|转告|汇报)\s*(?:一下|一声|下|声)?\s*"
+    r"[:：,，、.。!！\s]*(?P<content>.+)$",
+    # 找管理反馈一下机器人没反应
+    r"^(?:帮我|麻烦|拜托)?\s*(?:找|联系)\s*管理(?:员)?\s*"
+    r"(?:反馈|反映|说|处理|看看|看一下)\s*(?:一下|下)?\s*"
+    r"[:：,，、.。!！\s]*(?P<content>.+)$",
+]
+
+# 同一用户 60 秒内最多转达 1 次，避免刷屏管理员
+_AI_NOTIFY_LAST: dict[str, float] = {}
+_AI_NOTIFY_INTERVAL = 60.0
+
+
+async def _ai_admin_notify(ctx: ActionContext) -> dict:
+    """AI 动作：把内容转发给所有管理员，并登记一条待回复通知。"""
+    if not _is_enabled():
+        return {"status": "skip"}
+
+    content = ctx.arg_str("content")
+    if not content:
+        return {"status": "skip"}
+
+    # 去重：这句话若已被 notify_handler 的关键词转发覆盖，就交给它，避免重复推送
+    if _match_notify_keyword(ctx.text or ""):
+        return {"status": "skip"}
+
+    try:
+        superusers = [str(x) for x in (config_manager.superusers or [])]
+    except Exception:
+        superusers = []
+    if ctx.user_id in superusers:
+        return {"status": "skip"}
+
+    now = time.monotonic()
+    if now - _AI_NOTIFY_LAST.get(ctx.user_id, 0.0) < _AI_NOTIFY_INTERVAL:
+        return {"status": "error", "reply": "刚发过啦，等一下再说～"}
+    if not superusers:
+        return {"status": "error", "reply": "📝 你的消息已收到，管理员会尽快处理。"}
+
+    event = ctx.event
+    context = {
+        "user_id": ctx.user_id,
+        "user_nickname": getattr(getattr(event, "sender", None), "nickname", "")
+        or f"QQ{ctx.user_id}",
+        "original_content": content,
+    }
+    if isinstance(event, GroupMessageEvent):
+        context["group_id"] = event.group_id
+        context["group_name"] = getattr(event, "group_name", "") or f"群{event.group_id}"
+
+    notify_id = _add_notify_to_queue(context)
+    forward_msg = _build_quote_message(event, content)
+    forward_msg.append(MessageSegment.text(f"\n\n📋 通知ID：{notify_id}"))
+
+    success_count = 0
+    for admin_id in superusers:
+        try:
+            # 转达管理员属于「发给第三方」，只能走 bot API（不是 matcher.send/finish）
+            await ctx.bot.send_private_msg(user_id=int(admin_id), message=forward_msg)
+            success_count += 1
+        except Exception as e:
+            logger.warning(
+                f"[miku_notify_admin] AI 动作转发管理员 {admin_id} 失败: "
+                f"{type(e).__name__}: {e}"
+            )
+
+    if success_count <= 0:
+        return {"status": "error", "reply": "📝 你的消息已收到，管理员会尽快处理。"}
+
+    _AI_NOTIFY_LAST[ctx.user_id] = now
+    await ctx.emit(
+        f"✅ 已将你的消息转达给管理员，管理员稍后会回复你哦~\n"
+        f"📝 通知内容：{content}"
+    )
+    return {"status": "ok"}
+
+
+if register_ai_action is not None:
+    register_ai_action(
+        "admin.notify",
+        plugin="miku_notify_admin",
+        plugin_display="通知管理员",
+        description="把想反馈的内容转达给所有管理员，并生成一条待回复通知",
+        handler=_ai_admin_notify,
+        params={
+            "content": {
+                "type": "string",
+                "required": True,
+                "desc": "要告诉管理员的内容",
+                "max_len": 300,
+                "ask": "想跟管理员说什么呢？直接说内容就行～",
+            },
+        },
+        examples=["跟管理说一声机器人没反应", "帮我反馈给管理员：群管插件报错了"],
+        patterns=_AI_NOTIFY_PATTERNS,
+        keywords=[
+            "跟管理说", "跟管理反馈", "反馈给管理员", "反映给管理员",
+            "转告一下管理员",
+        ],
+        mode="action",
+        order=34,
+    )
+
+
+# ============================================================
+# 菜单注册
+# ============================================================
+
 register_plugin_info(
     "miku_notify_admin",
     name="通知管理员",

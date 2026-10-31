@@ -323,16 +323,31 @@ setu_cmd = on_command(
 )
 
 
-@setu_cmd.handle()
-async def _setu_handler(bot: Bot, event: MessageEvent, args: Message = CommandArg()):
+def _is_enabled() -> bool:
+    raw = _get_cfg("enabled", True)
+    return str(raw).strip().lower() not in ("false", "0", "no", "")
+
+
+async def send_setu(bot: Bot, event: MessageEvent, tag: str = "", emit=None) -> dict:
+    """取图并发送（命令与 AI 动作共用）。
+
+    - tag：搜索标签，空字符串=随机
+    - emit：发文字消息的函数，默认 setu_cmd.send；AI 动作传 ctx.emit
+      （图片本身始终用 bot.call_api 直发，以便拿到 message_id 安排撤回）
+    - 返回：{"status": "ok"}（图片已发出）/
+            {"status": "error", "reply": "提示文本"}（由调用方决定怎么发）
+    """
+    if emit is None:
+        emit = setu_cmd.send
+
     if not _get_proxy_host():
-        await setu_cmd.finish(
-            "❌ 图片代理未配置\n"
-            "请在 config/bot.yaml 的 miku_setu 区填写 pixiv_proxy_host"
-        )
+        return {
+            "status": "error",
+            "reply": "❌ 图片代理未配置\n请在 config/bot.yaml 的 miku_setu 区填写 pixiv_proxy_host",
+        }
 
     source = str(_get_cfg("source", "lolicon") or "lolicon").strip().lower()
-    tag = args.extract_plain_text().strip()
+    tag = str(tag or "").strip()
     record_plugin_usage("miku_setu", user_id=str(event.user_id), command_name="涩图")
 
     withdraw = int(_get_cfg("withdraw_seconds", 60) or 0)
@@ -343,19 +358,20 @@ async def _setu_handler(bot: Bot, event: MessageEvent, args: Message = CommandAr
             tag = "原神"
         token = await _get_access_token()
         if not token:
-            await setu_cmd.finish(
-                "❌ 未获取到 Pixiv access_token\n"
-                "请检查 config/bot.yaml 中的 pixiv_refresh_token 是否有效"
-            )
-        await setu_cmd.send(f"🔍 正在搜索「{tag}」的涩图...")
+            return {
+                "status": "error",
+                "reply": "❌ 未获取到 Pixiv access_token\n"
+                         "请检查 config/bot.yaml 中的 pixiv_refresh_token 是否有效",
+            }
+        await emit(f"🔍 正在搜索「{tag}」的涩图...")
         items = await _search_illust(token, tag)
         if not items:
-            await setu_cmd.finish(f"❌ 未搜索到「{tag}」的插画")
+            return {"status": "error", "reply": f"❌ 未搜索到「{tag}」的插画"}
     else:
-        await setu_cmd.send(f"🔍 正在获取「{tag or '随机涩图'}」...")
+        await emit(f"🔍 正在获取「{tag or '随机涩图'}」...")
         items = await _search_lolicon(tag)
         if not items:
-            await setu_cmd.finish(f"❌ 未找到「{tag or '涩图'}」相关图片，换个词试试")
+            return {"status": "error", "reply": f"❌ 未找到「{tag or '涩图'}」相关图片，换个词试试"}
 
     for item in items:
         img_url = _build_image_url(item)
@@ -383,11 +399,47 @@ async def _setu_handler(bot: Bot, event: MessageEvent, args: Message = CommandAr
                 )
             msg_id = _extract_msg_id(ret)
             _schedule_withdraw(bot, event, msg_id, withdraw)
-            return
+            return {"status": "ok"}
         except Exception as e:
             logger.warning(f"[miku_setu] 发送图片失败，尝试下一候选: {e}")
 
-    await setu_cmd.finish("❌ 图片发送失败，请检查代理配置")
+    return {"status": "error", "reply": "❌ 图片发送失败，请检查代理配置"}
+
+
+@setu_cmd.handle()
+async def _setu_handler(bot: Bot, event: MessageEvent, args: Message = CommandArg()):
+    result = await send_setu(
+        bot, event, tag=args.extract_plain_text().strip(), emit=setu_cmd.send
+    )
+    if result.get("status") == "error" and result.get("reply"):
+        await setu_cmd.finish(result["reply"])
+
+
+# ============================================================
+# AI 动作注册：setu.get
+# ============================================================
+try:
+    from utils.ai_actions import ActionContext, register_ai_action
+
+    async def _ai_setu_get(ctx: ActionContext) -> dict:
+        """AI 动作 setu.get：来一张随机涩图。"""
+        if not _is_enabled():
+            return {"status": "skip"}
+        return await send_setu(ctx.bot, ctx.event, tag="", emit=ctx.emit)
+
+    register_ai_action(
+        "setu.get",
+        plugin="miku_setu",
+        plugin_display="涩图",
+        description="来一张随机涩图（按 miku_setu 配置的图源与标签，图片会自动撤回）",
+        handler=_ai_setu_get,
+        params={},
+        examples=["来点涩图", "涩图", "色图"],
+        keywords=["涩图", "色图", "来点图"],
+        order=30,
+    )
+except ImportError:
+    pass
 
 
 register_plugin_info(

@@ -30,6 +30,11 @@ from utils.config_manager import config_manager
 from utils.bg_helper import find_and_load_bg
 import httpx
 
+try:
+    from utils.ai_actions import register_ai_action, ActionContext
+except ImportError:
+    register_ai_action = None
+
 
 __plugin_meta__ = PluginMetadata(
     name="Miku天气",
@@ -406,6 +411,99 @@ async def fetch_weather(city: str) -> WeatherData:
             raise InvalidLocationError(f"{city}不是一个有效地名")
     else:
         raise RuntimeError(_missing_config_hint())
+
+
+# ============================================================
+# AI 动作（天气查询）
+# ============================================================
+
+_CITY_GROUP = r"[^\s0-9A-Za-z，,。!！?？查看帮想问我你他她它吗呢啊的了吗]{2,10}?"
+
+_WEATHER_PATTERNS = [
+    # 不带城市：「今天天气怎么样」「天气如何」
+    r"^(?:今天|明天|现在|今日)?(?:的)?天气(?:怎么样|如何|咋样|好不好|情况)?(?:呢|啊)?[?？]?$",
+    # 带城市：「北京今天天气」「上海天气怎么样」「今天北京天气」
+    r"^(?:查一下|查查|看看|帮我查)?(?:今天|明天|现在|今日)?"
+    r"(?!(?:今天|明天|现在|今日))(?P<city>" + _CITY_GROUP + r")"
+    r"(?:今天|明天|现在|今日)?(?:的)?天气(?:怎么样|如何|咋样|好不好|情况)?(?:呢|啊)?[?？]?$",
+    # 温度：「今天多少度」「北京几度」
+    r"^(?:今天|明天|现在|今日)?(?:多少度|几度)(?:呢|啊)?[?？]?$",
+    r"^(?:查一下|查查|看看|帮我查)?(?:今天|明天|现在|今日)?"
+    r"(?!(?:今天|明天|现在|今日))(?P<city>" + _CITY_GROUP + r")"
+    r"(?:今天|明天|现在|今日)?(?:多少度|几度)(?:呢|啊)?[?？]?$",
+    # 降雨降雪：「东京会下雨吗」「北京要下雪吗」
+    r"^(?:查一下|查查|看看|帮我查)?"
+    r"(?!(?:今天|明天|现在|今日|会|要|下|降|变))(?P<city>" + _CITY_GROUP + r")"
+    r"(?:今天|明天|现在|今日)?(?:会|要)?(?:下雨|下雪|降温|变冷|变热)(?:吗|嘛|不|么|呢)?[?？]?$",
+    r"^(?:今天|明天|现在)?(?:会|要)?(?:下雨|下雪)(?:吗|嘛|不|么|呢)?[?？]?$",
+    # 冷暖/带伞：「今天冷不冷」「用不用带伞」
+    r"^(?:今天|明天|现在)?(?:冷不冷|热不热|冷吗|热吗|要不要带伞|需要带伞|用不用带伞)(?:呢|啊)?[?？]?$",
+    r"^(?:今天|明天|现在)?(?!(?:今天|明天|现在|今日))(?P<city>" + _CITY_GROUP + r")"
+    r"(?:今天|明天|现在)?(?:冷不冷|热不热)(?:呢|啊)?[?？]?$",
+]
+
+# 这些词是时间不是城市，被正则或模型误当成 city 时回退默认城市
+_TIME_WORDS = {"今天", "明天", "现在", "今日", "后天", "昨天", "明早", "今晚"}
+
+
+def _normalize_city(raw: str) -> str:
+    """清洗城市参数：去掉尾部的「的/天气」，时间词回退到默认城市。"""
+    city = str(raw or "").strip()
+    for suffix in ("的", "天气"):
+        if city.endswith(suffix) and len(city) > len(suffix):
+            city = city[: -len(suffix)].strip()
+    if not city or city in _TIME_WORDS:
+        return DEFAULT_CITY
+    return city
+
+
+async def _ai_weather(ctx: "ActionContext") -> dict:
+    """AI 动作：返回天气事实数据，由路由层交给 AI 组织成自然回复。"""
+    if not _is_enabled():
+        return {"status": "skip"}
+
+    city = _normalize_city(ctx.arg_str("city", ""))
+    try:
+        data = await fetch_weather(city)
+    except (InvalidLocationError, RuntimeError) as e:
+        return {"status": "error", "reply": str(e)}
+    except Exception as e:
+        logger.warning(f"[miku_weather] AI 动作查询失败: {type(e).__name__}: {e}")
+        return {"status": "error", "reply": "呜...天气查询失败了，等一下再试试吧～"}
+
+    data.aqi_text = _aqi_text(data.aqi)
+    text = (
+        f"城市={data.city} 天气={data.weather} "
+        f"当前={data.temp:g}° 最低={data.temp_low:g}° 最高={data.temp_high:g}° "
+        f"湿度={data.humidity}% 风={data.wind} AQI={data.aqi}({data.aqi_text})"
+    )
+    return {"status": "tool", "text": text}
+
+
+if register_ai_action is not None:
+    register_ai_action(
+        "weather.query",
+        plugin="miku_weather",
+        plugin_display="天气查询",
+        description="查询某个城市（或默认城市）的实时天气",
+        handler=_ai_weather,
+        params={
+            "city": {
+                "type": "string",
+                "required": False,
+                "desc": "城市名",
+                "max_len": 30,
+            },
+        },
+        examples=["今天天气怎么样", "北京今天天气", "东京会下雨吗"],
+        patterns=_WEATHER_PATTERNS,
+        keywords=[
+            "天气", "气温", "下雨", "下雪",
+            "冷不冷", "热不热", "带伞", "多少度",
+        ],
+        mode="tool",
+        order=30,
+    )
 
 
 # ============================================================
