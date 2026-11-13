@@ -85,7 +85,8 @@ _test_*.ps1
 # =====================================
 .env
 .env.*
-deploy/
+# 部署骨架里的 .env 模板是要发布的
+!deploy/package/.env.example
 CHANGELOG.MD
 Dockerfile
 docker-compose.yml
